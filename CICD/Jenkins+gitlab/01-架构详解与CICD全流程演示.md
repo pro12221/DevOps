@@ -465,7 +465,7 @@ sample-app/
 ```bash
 git status
 git log --oneline -5
-git rev-parse HEAD
+git rev-parse HEAD # 显示当前 Git 仓库 HEAD 所指向的提交哈希
 ```
 
 流水线应保存当前提交 SHA：
