@@ -1,0 +1,86 @@
+# deploy-blackbox.yml — 单独部署 blackbox_exporter（拨测机专用，不在宿主机批量部署范围）
+#
+# 用法:
+#   cd ansible
+#   ansible-playbook -i blackbox.ini deploy-blackbox.yml
+#
+# 说明:
+#   blackbox_exporter 装在拨测机上（vmagent 同机），监听 :9115，
+#   vmagent 通过 127.0.0.1:9115/probe?module=...&target=... 拨测 30000 台虚机。
+#   icmp 需要 CAP_NET_RAW（unit 里已用 AmbientCapabilities 授予）。
+
+- name: 部署 blackbox_exporter (测试拨测机)
+  hosts: blackbox_probe
+  become: true
+
+  vars:
+    bin_dir: "{{ playbook_dir }}/../bin"
+    exporter_install_dir: /usr/local/bin
+    blackbox_port: 9115
+
+  tasks:
+    - name: 分发 blackbox_exporter
+      ansible.builtin.copy:
+        src: "{{ bin_dir }}/blackbox_exporter"
+        dest: "{{ exporter_install_dir }}/blackbox_exporter"
+        mode: "0755"
+      notify: 重启 blackbox-exporter
+
+    - name: 创建配置目录
+      ansible.builtin.file:
+        path: /etc/blackbox_exporter
+        state: directory
+        mode: "0755"
+
+    - name: 分发 blackbox.yml
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../blackbox.yml"
+        dest: /etc/blackbox_exporter/blackbox.yml
+        mode: "0644"
+      notify: 重启 blackbox-exporter
+
+    - name: 安装 blackbox-exporter systemd unit
+      ansible.builtin.copy:
+        content: |
+          [Unit]
+          Description=blackbox_exporter - icmp/tcp 拨测
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          ExecStart={{ exporter_install_dir }}/blackbox_exporter --config.file=/etc/blackbox_exporter/blackbox.yml --web.listen-address=:{{ blackbox_port }}
+          # icmp 拨测需要 raw socket 权限，不 root 运行也能发 ping
+          AmbientCapabilities=CAP_NET_RAW
+          CapabilityBoundingSet=CAP_NET_RAW
+          Restart=on-failure
+          RestartSec=5
+          NoNewPrivileges=true
+
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/systemd/system/blackbox-exporter.service
+        mode: "0644"
+      notify: 重启 blackbox-exporter
+
+    - name: 启动并开机自启
+      ansible.builtin.systemd:
+        name: blackbox-exporter
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: 验证 metrics 端点
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ blackbox_port }}/metrics"
+      register: blackbox_check
+      retries: 3
+      delay: 2
+      until: blackbox_check.status == 200
+
+  handlers:
+    - name: 重启 blackbox-exporter
+      ansible.builtin.systemd:
+        name: blackbox-exporter
+        state: restarted
+        daemon_reload: true

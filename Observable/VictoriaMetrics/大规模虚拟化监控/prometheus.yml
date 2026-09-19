@@ -1,0 +1,112 @@
+# vmagent / Prometheus 抓取配置（两者通用，vmagent 用 -promscrape.config 指定）
+# 每 30s 拨测一次：icmp(ping) + tcp_connect(ssh 22 / rdp 3389)
+# 目标列表来自 cmdb-sd.py 生成的 file_sd 文件
+
+global:
+  scrape_interval: 30s
+  scrape_timeout: 10s
+  # 注: vmagent 不支持 evaluation_interval（那是 Prometheus 做规则评估用的）
+  # file_sd 刷新间隔由 vmagent 启动参数 -promscrape.fileSDCheckInterval 控制（默认 1m，
+  # deploy-vm.yml 里已设为 5m），因此各 job 里的 refresh_interval 字段已删除
+
+scrape_configs:
+  - job_name: blackbox-icmp
+    metrics_path: /probe
+    params:
+      module: [icmp]
+    file_sd_configs:
+      - files:
+          - /data/targets.json
+    relabel_configs:
+      # 把真实 IP 交给 blackbox 的 ?target= 参数
+      - source_labels: [__address__]
+        target_label: __param_target
+      # instance 显示真实 IP
+      - source_labels: [__param_target]
+        target_label: instance
+      # 实际抓取地址改写为 blackbox_exporter
+      - target_label: __address__
+        replacement: 127.0.0.1:9115
+
+  - job_name: blackbox-tcp
+    metrics_path: /probe
+    params:
+      module: [tcp_connect]
+    file_sd_configs:
+      - files:
+          - /data/targets.json
+    relabel_configs:
+      # instance 显示真实 IP
+      - source_labels: [__address__]
+        target_label: instance
+      # 默认目标 = IP:22 (ssh)。blackbox 的 tcp prober 从 target 里读端口
+      - source_labels: [__address__]
+        regex: (.*)
+        target_label: __param_target
+        replacement: ${1}:22
+      # Windows 虚机改成 3389 (RDP)
+      - source_labels: [__address__, os]
+        regex: (.*);windows
+        target_label: __param_target
+        replacement: ${1}:3389
+      # 实际抓取地址改写为 blackbox_exporter
+      - target_label: __address__
+        replacement: 127.0.0.1:9115
+
+  # 虚机资源监控：宿主机侧 libvirt_exporter 采集每个虚机(domain)的 CPU/内存/磁盘/网络，
+  # 用于定位"哪台虚机跑高拖垮宿主机"。虚机零侵入，不需要在虚机内装 agent。
+  - job_name: libvirt-vm
+    scrape_interval: 30s
+    file_sd_configs:
+      - files:
+          - /data/targets.json
+    relabel_configs:
+      # 只抓宿主机（type=host），虚机目标丢弃
+      - source_labels: [type]
+        regex: host
+        action: keep
+      # instance 显示宿主机真实 IP，与 node_exporter/blackbox 对齐
+      - source_labels: [__address__]
+        target_label: instance
+      # 实际抓取地址改写为宿主机:9177
+      - source_labels: [__address__]
+        regex: (.*)
+        target_label: __address__
+        replacement: ${1}:9177
+    metric_relabel_configs:
+      # domain(10-89-132-21) → vm_ip(10.89.132.21)，与 CMDB/blackbox 虚机标签对齐
+      - source_labels: [domain]
+        regex: (.*)-(.*)-(.*)-(.*)
+        target_label: vm_ip
+        replacement: ${1}.${2}.${3}.${4}
+      # 丢掉高基数标签（source_file/serial 常带唯一 ID），保留 target_device（虚机网卡名）
+      - regex: (source_file|serial|source_bridge|virtual_interface|mac_address|interface_type|model_type|mtu_size|driver_name|driver_type|driver_cache|driver_discard|disk_type|target_bus)
+        action: labeldrop
+      # 丢掉 info/meta 信息序列（值恒为 1、只带标签，纯浪费）
+      # inovex 版 meta 系列命名: libvirt_domain_info / block_stats_info / interface_stats_info / openstack_info
+      - source_labels: [__name__]
+        regex: libvirt_domain_(info|block_stats_info|interface_stats_info|openstack_info)
+        action: drop
+      # 注：libvirt 只暴露 domain XML 里挂的网卡（eth0/eth1…），不包含虚机内部的 lo，
+      # 所以虚机侧无需再丢 lo，target_device 里不会出现 lo。
+
+  # 宿主机资源监控：node_exporter（所有网卡都采集，含 lo/veth/bond/bridge，不做过滤）
+  # 展示时"只看有流量"的网卡用 rate(...) > 阈值，见 rules/vm-noise-neighbor.yml 里的 Grafana PromQL
+  - job_name: node-exporter
+    scrape_interval: 30s
+    file_sd_configs:
+      - files:
+          - /data/targets.json
+    relabel_configs:
+      # 只抓宿主机（type=host）
+      - source_labels: [type]
+        regex: host
+        action: keep
+      # instance 显示宿主机真实 IP
+      - source_labels: [__address__]
+        target_label: instance
+      # 实际抓取地址改写为宿主机:9100
+      - source_labels: [__address__]
+        regex: (.*)
+        target_label: __address__
+        replacement: ${1}:9100

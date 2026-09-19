@@ -1,0 +1,19 @@
+# blackbox_exporter 配置
+# 启动: ./blackbox_exporter --config.file=blackbox.yml   (默认监听 :9115)
+#
+# icmp 拨测需要 raw socket 权限:
+#   setcap cap_net_raw+ep /data/bin/blackbox_exporter
+#   或 systemd 中用 AmbientCapabilities=CAP_NET_RAW
+
+modules:
+  icmp:
+    prober: icmp
+    timeout: 5s
+    icmp:
+      preferred_ip_protocol: ip4
+
+  tcp_connect:
+    prober: tcp
+    timeout: 5s
+    tcp:
+      preferred_ip_protocol: ip4

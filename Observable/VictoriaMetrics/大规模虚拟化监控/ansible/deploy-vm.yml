@@ -1,0 +1,304 @@
+# deploy-vm.yml — 在拨测机上部署 VictoriaMetrics + vmagent + vmalert，并搭好 file_sd 生成链路
+#
+# 用法:
+#   cd ansible
+#   ansible-playbook -i blackbox.ini deploy-vm.yml
+#
+# 部署在同一台拨测机上（与 blackbox_exporter 同机）:
+#   victoria-metrics-prod  :8428   单机版 TSDB，存 30 天，数据目录 /data/vm
+#   vmagent-prod           :8429   抓取器，读取按环境拆分的 file_sd 文件
+#   vmalert-prod           :8880   规则引擎，读 rules/*.yml，recording 写回 VM
+#
+# 抓取链路:
+#   cmdb-sd.py (cron, 每 10 分钟)  →  /data/targets/*.json
+#   生产 vmagent  →  生产 exporter  →  127.0.0.1:8428
+#   测试 vmagent  →  测试 exporter/blackbox → 10.69.81.68:8428
+#
+# 前置: cmdb-sd.py 已内置 CMDB api-key（内部使用），仅依赖 python3，无需传参。
+
+- name: 部署 VictoriaMetrics + vmagent + vmalert
+  hosts: vm_storage:vmagent_production:vmagent_testing:vmalert
+  become: true
+
+  vars:
+    bin_dir: "{{ playbook_dir }}/../bin"
+    install_dir: /usr/local/bin
+    vm_port: 8428
+    vmagent_port: 8429
+    data_dir: /data/vm
+    targets_dir: /data/targets
+    config_dir: /etc/vmagent
+    vmalert_port: 8880
+    rules_dir: /etc/vmalert/rules
+    retention: 30d
+    testing_idc_prefix: "TEST"
+    vmagent_role: >-
+      {{ 'testing' if 'vmagent_testing' in group_names else 'production' }}
+    vmagent_config: "/{{ 'prometheus-testing.yml' if vmagent_role == 'testing' else 'prometheus-production.yml' }}"
+    remote_write_url: >-
+      {{ 'http://10.69.81.68:8428/api/v1/write' if vmagent_role == 'testing'
+         else 'http://127.0.0.1:8428/api/v1/write' }}
+
+  tasks:
+    - name: 校验 CMDB IDC 前缀配置
+      ansible.builtin.assert:
+        that:
+          - testing_idc_prefix | length > 0
+        fail_msg: >-
+          testing_idc_prefix 不能为空；默认 TEST，可使用
+          -e testing_idc_prefix=... 覆盖。
+      when: "'vmagent_production' in group_names or 'vmagent_testing' in group_names"
+
+    - name: 确保数据/配置目录存在
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop: >-
+        {{ ([data_dir] if 'vm_storage' in group_names else [])
+           + ([targets_dir, config_dir] if ('vmagent_production' in group_names or 'vmagent_testing' in group_names) else [])
+           + ([rules_dir] if 'vmalert' in group_names else []) }}
+
+    - name: 分发 victoria-metrics-prod
+      ansible.builtin.copy:
+        src: "{{ bin_dir }}/victoria-metrics-prod"
+        dest: "{{ install_dir }}/victoria-metrics-prod"
+        mode: "0755"
+      when: "'vm_storage' in group_names"
+      notify: 重启 victoria-metrics
+
+    - name: 分发 vmagent-prod
+      ansible.builtin.copy:
+        src: "{{ bin_dir }}/vmagent-prod"
+        dest: "{{ install_dir }}/vmagent-prod"
+        mode: "0755"
+      when: "'vmagent_production' in group_names or 'vmagent_testing' in group_names"
+      notify: 重启 vmagent
+
+    - name: 分发 vmalert-prod
+      ansible.builtin.copy:
+        src: "{{ bin_dir }}/vmalert-prod"
+        dest: "{{ install_dir }}/vmalert-prod"
+        mode: "0755"
+      when: "'vmalert' in group_names"
+      notify: 重启 vmalert
+
+    - name: 分发 vmagent 抓取配置
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/..{{ vmagent_config }}"
+        dest: "{{ config_dir }}/prometheus.yml"
+        mode: "0644"
+      when: "'vmagent_production' in group_names or 'vmagent_testing' in group_names"
+      notify: 重启 vmagent
+
+    - name: 分发 cmdb-sd.py
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../cmdb-sd.py"
+        dest: "{{ config_dir }}/cmdb-sd.py"
+        mode: "0755"
+      when: "'vmagent_production' in group_names or 'vmagent_testing' in group_names"
+
+    - name: 分发 vmalert 规则文件
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../rules/"
+        dest: "{{ rules_dir }}/"
+        mode: "0644"
+      when: "'vmalert' in group_names"
+      notify: 重启 vmalert
+
+    - name: 确保 python3 存在 (cmdb-sd.py 依赖)
+      ansible.builtin.command:
+        cmd: "python3 --version"
+      changed_when: false
+      failed_when: false
+      register: py3_check
+      when: "'vmagent_production' in group_names or 'vmagent_testing' in group_names"
+
+    - name: 提醒 python3 缺失
+      ansible.builtin.debug:
+        msg: "WARN: python3 不可用，cmdb-sd.py 无法运行——请先安装 python3"
+      when: "py3_check is defined and py3_check.rc != 0"
+
+    - name: 安装 victoria-metrics systemd unit
+      ansible.builtin.copy:
+        content: |
+          [Unit]
+          Description=victoria-metrics - single-node TSDB
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          ExecStart={{ install_dir }}/victoria-metrics-prod --storageDataPath={{ data_dir }} --retentionPeriod={{ retention }} --httpListenAddr=0.0.0.0:{{ vm_port }}
+          Restart=on-failure
+          RestartSec=5
+          LimitNOFILE=65536
+          LimitMEMLOCK=infinity
+          NoNewPrivileges=true
+
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/systemd/system/victoria-metrics.service
+        mode: "0644"
+      when: "'vm_storage' in group_names"
+      notify: 重启 victoria-metrics
+
+    - name: 安装 vmagent systemd unit
+      ansible.builtin.copy:
+        content: |
+          [Unit]
+          Description=vmagent - scrape & remoteWrite
+          After=network-online.target
+          Wants=network-online.target
+          # file_sd 还没生成时 vmagent 起来也没目标，失败无妨，稍后 cron 补上
+          StartLimitIntervalSec=0
+
+          [Service]
+          Type=simple
+          # fileSDCheckInterval: targets.json 变更检测间隔（vmagent 的 yaml 里不再支持 refresh_interval 字段）
+          ExecStart={{ install_dir }}/vmagent-prod --promscrape.config={{ config_dir }}/prometheus.yml --promscrape.fileSDCheckInterval=5m --remoteWrite.url={{ remote_write_url }} --httpListenAddr=0.0.0.0:{{ vmagent_port }}
+          Restart=on-failure
+          RestartSec=5
+          LimitNOFILE=65536
+          NoNewPrivileges=true
+
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/systemd/system/vmagent.service
+        mode: "0644"
+      when: "'vmagent_production' in group_names or 'vmagent_testing' in group_names"
+      notify: 重启 vmagent
+
+    - name: 安装 vmalert systemd unit
+      ansible.builtin.copy:
+        content: |
+          [Unit]
+          Description=vmalert - rule engine (recording + alerting)
+          After=network-online.target victoria-metrics.service
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          # datasource 读 / remoteWrite 写都指向同机 VM；无 alertmanager 时告警只保留在内存（可加 -notifier.url 对接）
+          # 注意：vmalert 的 -remoteWrite.url 会自动追加 /api/v1/write，这里只写 base URL，不能带路径
+          ExecStart={{ install_dir }}/vmalert-prod -rule={{ rules_dir }}/*.yml -datasource.url=http://127.0.0.1:{{ vm_port }} -remoteRead.url=http://127.0.0.1:{{ vm_port }} -remoteWrite.url=http://127.0.0.1:{{ vm_port }} -httpListenAddr=0.0.0.0:{{ vmalert_port }}
+          Restart=on-failure
+          RestartSec=5
+          LimitNOFILE=65536
+          NoNewPrivileges=true
+
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/systemd/system/vmalert.service
+        mode: "0644"
+      when: "'vmalert' in group_names"
+      notify: 重启 vmalert
+
+    - name: 安装 cmdb-sd 定时任务 (每 10 分钟刷新 file_sd)
+      ansible.builtin.cron:
+        name: cmdb-sd refresh
+        minute: "*/10"
+        job: "TESTING_IDC_PREFIX='{{ testing_idc_prefix }}' TARGETS_DIR='{{ targets_dir }}' {{ config_dir }}/cmdb-sd.py >> /var/log/cmdb-sd.log 2>&1"
+        state: present
+      when: "'vmagent_production' in group_names or 'vmagent_testing' in group_names"
+
+    - name: 首次立即生成 file_sd (不等 cron)
+      ansible.builtin.command:
+        cmd: "{{ config_dir }}/cmdb-sd.py"
+      environment:
+        TESTING_IDC_PREFIX: "{{ testing_idc_prefix }}"
+        TARGETS_DIR: "{{ targets_dir }}"
+      register: sd_first_run
+      changed_when: sd_first_run.stdout is search('生成')
+      failed_when: false
+      when: "'vmagent_production' in group_names or 'vmagent_testing' in group_names"
+
+    - name: 启动 VictoriaMetrics 并开机自启
+      ansible.builtin.systemd:
+        name: victoria-metrics
+        enabled: true
+        state: started
+        daemon_reload: true
+      when: "'vm_storage' in group_names"
+
+    - name: 启动 vmagent 并开机自启
+      ansible.builtin.systemd:
+        name: vmagent
+        enabled: true
+        state: started
+        daemon_reload: true
+      when: "'vmagent_production' in group_names or 'vmagent_testing' in group_names"
+
+    - name: 启动 vmalert 并开机自启
+      ansible.builtin.systemd:
+        name: vmalert
+        enabled: true
+        state: started
+        daemon_reload: true
+      when: "'vmalert' in group_names"
+
+    - name: 验证 victoria-metrics 健康
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ vm_port }}/health"
+      register: vm_check
+      retries: 5
+      delay: 2
+      until: vm_check.status == 200
+      when: "'vm_storage' in group_names"
+
+    - name: 验证 vmagent 抓取有目标
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ vmagent_port }}/api/v1/targets"
+        return_content: true
+      register: vmagent_check
+      retries: 6
+      delay: 10
+      until: vmagent_check.status == 200
+      when: "'vmagent_production' in group_names or 'vmagent_testing' in group_names"
+
+    - name: 验证 vmalert 健康
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ vmalert_port }}/-/healthy"
+      register: vmalert_check
+      retries: 6
+      delay: 5
+      until: vmalert_check.status == 200
+      when: "'vmalert' in group_names"
+
+    - name: 报告 file_sd 是否已生成
+      ansible.builtin.stat:
+        path: "{{ targets_dir }}/{{ item }}"
+      loop:
+        - production-node.json
+        - production-libvirt.json
+        - testing-node.json
+        - testing-libvirt.json
+        - blackbox-icmp.json
+        - blackbox-tcp.json
+      register: targets_files
+      when: "'vmagent_production' in group_names or 'vmagent_testing' in group_names"
+
+    - name: 提醒 file_sd 状态
+      ansible.builtin.debug:
+        msg: "file_sd {{ item.item }}: {{ '已生成' if item.stat.exists else '未生成' }}"
+      loop: "{{ targets_files.results | default([]) }}"
+      when: "'vmagent_production' in group_names or 'vmagent_testing' in group_names"
+
+  handlers:
+    - name: 重启 victoria-metrics
+      ansible.builtin.systemd:
+        name: victoria-metrics
+        state: restarted
+        daemon_reload: true
+
+    - name: 重启 vmagent
+      ansible.builtin.systemd:
+        name: vmagent
+        state: restarted
+        daemon_reload: true
+
+    - name: 重启 vmalert
+      ansible.builtin.systemd:
+        name: vmalert
+        state: restarted
+        daemon_reload: true

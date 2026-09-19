@@ -1,0 +1,796 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_VM",
+      "label": "VictoriaMetrics (Prometheus 兼容)",
+      "description": "",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    }
+  ],
+  "__elements": {},
+  "__requires": [
+    {
+      "type": "grafana",
+      "id": "grafana",
+      "name": "Grafana",
+      "version": "12.1.0"
+    },
+    {
+      "type": "datasource",
+      "id": "prometheus",
+      "name": "Prometheus",
+      "version": "1.0.0"
+    },
+    {
+      "type": "panel",
+      "id": "stat",
+      "name": "Stat",
+      "version": ""
+    },
+    {
+      "type": "panel",
+      "id": "timeseries",
+      "name": "Time series",
+      "version": ""
+    }
+  ],
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "UVMP 宿主机资源监控：node_exporter 采集的 CPU / 负载 / 内存 / 磁盘 / 网络。按 idc(机房) 与 biz2(二级业务) 过滤，可再按宿主机(instance) 收窄。数据源: VictoriaMetrics。",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "panels": [],
+      "title": "总览",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "当前过滤范围内宿主机总数。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "id": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "count(count by (instance) (node_load1{idc=~\"$idc\", biz2=~\"$biz2\", instance=~\"$host\"}))",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "宿主机数",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "过滤范围内宿主机 CPU 平均使用率（全部核，含 user/system/iowait/steal）。>90% 橙、>95% 红。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 90 },
+              { "color": "red", "value": 95 }
+            ]
+          },
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "100 - 100 * avg(rate(node_cpu_seconds_total{mode=\"idle\", idc=~\"$idc\", biz2=~\"$biz2\", instance=~\"$host\"}[5m]))",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "CPU 使用率",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "过滤范围内宿主机内存平均使用率（1 - MemAvailable/MemTotal）。>90% 橙、>95% 红。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 90 },
+              { "color": "red", "value": 95 }
+            ]
+          },
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "100 * (1 - sum(node_memory_MemAvailable_bytes{idc=~\"$idc\", biz2=~\"$biz2\", instance=~\"$host\"}) / sum(node_memory_MemTotal_bytes{idc=~\"$idc\", biz2=~\"$biz2\", instance=~\"$host\"}))",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "内存使用率",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "过滤范围内宿主机 1 分钟平均负载的平均值。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "avg(node_load1{idc=~\"$idc\", biz2=~\"$biz2\", instance=~\"$host\"})",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "平均负载 (1m)",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "过滤范围内宿主机磁盘（ext4/xfs/btrfs，排除 /boot）使用率最高值。>90% 橙、>95% 红。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 90 },
+              { "color": "red", "value": 95 }
+            ]
+          },
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
+      "id": 5,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "max(100 * (1 - node_filesystem_avail_bytes{fstype=~\"ext4|xfs|btrfs\", mountpoint!~\"/boot.*\", idc=~\"$idc\", biz2=~\"$biz2\", instance=~\"$host\"} / node_filesystem_size_bytes{fstype=~\"ext4|xfs|btrfs\", mountpoint!~\"/boot.*\", idc=~\"$idc\", biz2=~\"$biz2\", instance=~\"$host\"}))",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "磁盘使用率 (max)",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "id": 101,
+      "panels": [],
+      "title": "CPU 与负载",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "每台宿主机的 CPU 使用率趋势（legend=宿主机 IP）。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "id": 6,
+      "options": {
+        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "100 - 100 * avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\", idc=~\"$idc\", biz2=~\"$biz2\", instance=~\"$host\"}[5m]))",
+          "legendFormat": "{{instance}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "CPU 使用率趋势",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "每台宿主机的 1/5/15 分钟负载趋势。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "id": 7,
+      "options": {
+        "legend": { "calcs": ["max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "node_load1{idc=~\"$idc\", biz2=~\"$biz2\", instance=~\"$host\"}",
+          "legendFormat": "{{instance}} load1",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "node_load5{idc=~\"$idc\", biz2=~\"$biz2\", instance=~\"$host\"}",
+          "legendFormat": "{{instance}} load5",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "node_load15{idc=~\"$idc\", biz2=~\"$biz2\", instance=~\"$host\"}",
+          "legendFormat": "{{instance}} load15",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "title": "负载趋势 (1/5/15m)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 },
+      "id": 102,
+      "panels": [],
+      "title": "内存",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "每台宿主机内存使用率趋势（legend=宿主机 IP）。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+      "id": 8,
+      "options": {
+        "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "100 * (1 - node_memory_MemAvailable_bytes{idc=~\"$idc\", biz2=~\"$biz2\", instance=~\"$host\"} / node_memory_MemTotal_bytes{idc=~\"$idc\", biz2=~\"$biz2\", instance=~\"$host\"})",
+          "legendFormat": "{{instance}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "内存使用率趋势",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "每台宿主机内存容量堆叠：used = MemTotal - MemAvailable，avail = MemAvailable。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 30,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "normal" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
+      "id": 9,
+      "options": {
+        "legend": { "calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "node_memory_MemTotal_bytes{idc=~\"$idc\", biz2=~\"$biz2\", instance=~\"$host\"} - node_memory_MemAvailable_bytes{idc=~\"$idc\", biz2=~\"$biz2\", instance=~\"$host\"}",
+          "legendFormat": "{{instance}} used",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "node_memory_MemAvailable_bytes{idc=~\"$idc\", biz2=~\"$biz2\", instance=~\"$host\"}",
+          "legendFormat": "{{instance}} avail",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "内存容量 (used + available)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 },
+      "id": 103,
+      "panels": [],
+      "title": "磁盘",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "每台宿主机各挂载点磁盘使用率（ext4/xfs/btrfs，排除 /boot）。legend=宿主机 挂载点。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "id": 10,
+      "options": {
+        "legend": { "calcs": ["max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "100 * (1 - node_filesystem_avail_bytes{fstype=~\"ext4|xfs|btrfs\", mountpoint!~\"/boot.*\", idc=~\"$idc\", biz2=~\"$biz2\", instance=~\"$host\"} / node_filesystem_size_bytes{fstype=~\"ext4|xfs|btrfs\", mountpoint!~\"/boot.*\", idc=~\"$idc\", biz2=~\"$biz2\", instance=~\"$host\"})",
+          "legendFormat": "{{instance}} {{mountpoint}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "磁盘使用率",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "每台宿主机各磁盘设备的读写速率（B/s）。legend=宿主机 设备 读写。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "Bps"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "id": 11,
+      "options": {
+        "legend": { "calcs": ["max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "rate(node_disk_read_bytes_total{device!~\"loop.*|sr[0-9].*|ram.*\", idc=~\"$idc\", biz2=~\"$biz2\", instance=~\"$host\"}[5m])",
+          "legendFormat": "{{instance}} {{device}} read",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "rate(node_disk_written_bytes_total{device!~\"loop.*|sr[0-9].*|ram.*\", idc=~\"$idc\", biz2=~\"$biz2\", instance=~\"$host\"}[5m])",
+          "legendFormat": "{{instance}} {{device}} write",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "磁盘 IO 速率",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 32 },
+      "id": 104,
+      "panels": [],
+      "title": "网络",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "每台宿主机各网卡的收/发速率（B/s，排除 lo）。legend=宿主机 设备 收/发。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "unit": "Bps"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 33 },
+      "id": 12,
+      "options": {
+        "legend": { "calcs": ["max"], "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "rate(node_network_receive_bytes_total{device!=\"lo\", idc=~\"$idc\", biz2=~\"$biz2\", instance=~\"$host\"}[5m])",
+          "legendFormat": "{{instance}} {{device}} recv",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "rate(node_network_transmit_bytes_total{device!=\"lo\", idc=~\"$idc\", biz2=~\"$biz2\", instance=~\"$host\"}[5m])",
+          "legendFormat": "{{instance}} {{device}} send",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "网络流量速率",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "1m",
+  "schemaVersion": 41,
+  "tags": ["uvmp", "resource", "node-exporter", "host"],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+        "definition": "label_values(node_load1{job=\"node-exporter\"}, idc)",
+        "hide": 0,
+        "includeAll": true,
+        "allValue": ".*",
+        "label": "机房 (idc)",
+        "multi": true,
+        "name": "idc",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(node_load1{job=\"node-exporter\"}, idc)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": {},
+        "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+        "definition": "label_values(node_load1{job=\"node-exporter\", idc=~\"$idc\"}, biz2)",
+        "hide": 0,
+        "includeAll": true,
+        "allValue": ".*",
+        "label": "二级业务 (biz2)",
+        "multi": true,
+        "name": "biz2",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(node_load1{job=\"node-exporter\", idc=~\"$idc\"}, biz2)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": {},
+        "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+        "definition": "label_values(node_load1{job=\"node-exporter\", idc=~\"$idc\", biz2=~\"$biz2\"}, instance)",
+        "hide": 0,
+        "includeAll": true,
+        "allValue": ".*",
+        "label": "宿主机 (host)",
+        "multi": true,
+        "name": "host",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(node_load1{job=\"node-exporter\", idc=~\"$idc\", biz2=~\"$biz2\"}, instance)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": { "from": "now-3h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "UVMP 宿主机资源 (node_exporter)",
+  "uid": "uvmp-host-resource",
+  "version": 1,
+  "weekStart": ""
+}

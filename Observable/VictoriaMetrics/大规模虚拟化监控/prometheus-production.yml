@@ -1,0 +1,51 @@
+global:
+  scrape_interval: 30s
+  scrape_timeout: 10s
+
+scrape_configs:
+  - job_name: node-exporter
+    file_sd_configs:
+      - files: [/data/targets/production-node.json]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+      - target_label: environment
+        replacement: production
+      - target_label: scrape_source
+        replacement: production
+
+  - job_name: libvirt-vm
+    file_sd_configs:
+      - files: [/data/targets/production-libvirt.json]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __address__
+        regex: (.*)
+        replacement: ${1}:9177
+      - source_labels: [__address__]
+        target_label: host_ip
+      - target_label: environment
+        replacement: production
+      - target_label: scrape_source
+        replacement: production
+
+  - job_name: self-monitoring
+    static_configs:
+      - targets:
+          - 127.0.0.1:8428
+        labels:
+          component: victoria-metrics
+          environment: production
+          scrape_source: production
+      - targets:
+          - 127.0.0.1:8429
+        labels:
+          component: vmagent
+          environment: production
+          scrape_source: production
+      - targets:
+          - 127.0.0.1:8880
+        labels:
+          component: vmalert
+          environment: production
+          scrape_source: production

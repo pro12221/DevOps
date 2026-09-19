@@ -1,0 +1,823 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_VM",
+      "label": "VictoriaMetrics (Prometheus 兼容)",
+      "description": "",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    }
+  ],
+  "__elements": {},
+  "__requires": [
+    {
+      "type": "grafana",
+      "id": "grafana",
+      "name": "Grafana",
+      "version": "12.1.0"
+    },
+    {
+      "type": "datasource",
+      "id": "prometheus",
+      "name": "Prometheus",
+      "version": "1.0.0"
+    },
+    {
+      "type": "panel",
+      "id": "stat",
+      "name": "Stat",
+      "version": ""
+    },
+    {
+      "type": "panel",
+      "id": "timeseries",
+      "name": "Time series",
+      "version": ""
+    },
+    {
+      "type": "panel",
+      "id": "table",
+      "name": "Table",
+      "version": ""
+    }
+  ],
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "UVMP 虚机资源大盘：基于宿主机侧 libvirt exporter 的按虚机 CPU/内存/磁盘/网络指标。支持 idc / 宿主机 / 一级业务 / 二级业务 过滤；选中宿主机后所有虚机在同一张图里按 vm_ip 对比。虚机的业务标签(biz1/biz2)来自 blackbox 拨测(vm_ip 关联)。数据源: VictoriaMetrics。",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 100,
+      "panels": [],
+      "title": "总览",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "当前 idc / 宿主机 / 一级业务 / 二级业务 过滤范围内的虚机总数。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "green", "value": null }]
+          },
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
+      "id": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "count(uvmp:vm:vcpus{idc=~\"$idc\", instance=~\"$host\", biz1=~\"$biz1\", biz2=~\"$biz2\"})",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "虚机数",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "过滤范围内所有虚机的平均 CPU 使用率（按各虚机 vcpu_time 速率 / 核数归一化后取平均）。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 80 },
+              { "color": "red", "value": 90 }
+            ]
+          },
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "avg(uvmp:vm:cpu_percent{idc=~\"$idc\", instance=~\"$host\", biz1=~\"$biz1\", biz2=~\"$biz2\"})",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "平均 CPU 使用率",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "过滤范围内所有虚机的平均内存使用率（libvirt_domain_memory_stats_used_percent）。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 80 },
+              { "color": "red", "value": 90 }
+            ]
+          },
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 1 },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "avg(uvmp:vm:memory_used_percent{idc=~\"$idc\", instance=~\"$host\", biz1=~\"$biz1\", biz2=~\"$biz2\"})",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "平均内存使用率",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "过滤范围内所有虚机的平均 vCPU 核数。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "blue", "value": null }]
+          },
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "avg(uvmp:vm:vcpus{idc=~\"$idc\", instance=~\"$host\", biz1=~\"$biz1\", biz2=~\"$biz2\"})",
+          "instant": true,
+          "legendFormat": "",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "平均 vCPU 核数",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "id": 101,
+      "panels": [],
+      "title": "CPU / 内存 对比",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "当前宿主机（及过滤范围）上所有虚机的 CPU 使用率，一条线一台虚机，图例为 vm_ip。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "mode": "none", "group": "A" },
+            "axisCenteredZero": false,
+            "hideFrom": { "tooltip": false, "viz": false, "legend": false },
+            "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "unit": "percent",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "id": 5,
+      "options": {
+        "legend": {
+          "calcs": ["lastNotNull"],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "uvmp:vm:cpu_percent{idc=~\"$idc\", instance=~\"$host\", biz1=~\"$biz1\", biz2=~\"$biz2\"}",
+          "legendFormat": "{{vm_ip}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "CPU 使用率对比 (vm_ip)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "当前宿主机（及过滤范围）上所有虚机的内存使用率，一条线一台虚机，图例为 vm_ip。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "mode": "none", "group": "A" },
+            "axisCenteredZero": false,
+            "hideFrom": { "tooltip": false, "viz": false, "legend": false },
+            "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "id": 6,
+      "options": {
+        "legend": {
+          "calcs": ["lastNotNull"],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "uvmp:vm:memory_used_percent{idc=~\"$idc\", instance=~\"$host\", biz1=~\"$biz1\", biz2=~\"$biz2\"}",
+          "legendFormat": "{{vm_ip}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "内存使用率对比 (vm_ip)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 },
+      "id": 102,
+      "panels": [],
+      "title": "磁盘 对比",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "当前宿主机（及过滤范围）上所有虚机的磁盘读取速率（各 block 设备求和），一条线一台虚机。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "mode": "none", "group": "A" },
+            "axisCenteredZero": false,
+            "hideFrom": { "tooltip": false, "viz": false, "legend": false },
+            "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "unit": "Bps",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+      "id": 7,
+      "options": {
+        "legend": {
+          "calcs": ["lastNotNull"],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "uvmp:vm:disk_read_bytes:rate5m{idc=~\"$idc\", instance=~\"$host\", biz1=~\"$biz1\", biz2=~\"$biz2\"}",
+          "legendFormat": "{{vm_ip}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "磁盘读取速率对比 (vm_ip)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "当前宿主机（及过滤范围）上所有虚机的磁盘写入速率（各 block 设备求和），一条线一台虚机。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "mode": "none", "group": "A" },
+            "axisCenteredZero": false,
+            "hideFrom": { "tooltip": false, "viz": false, "legend": false },
+            "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "unit": "Bps",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
+      "id": 8,
+      "options": {
+        "legend": {
+          "calcs": ["lastNotNull"],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "uvmp:vm:disk_write_bytes:rate5m{idc=~\"$idc\", instance=~\"$host\", biz1=~\"$biz1\", biz2=~\"$biz2\"}",
+          "legendFormat": "{{vm_ip}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "磁盘写入速率对比 (vm_ip)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 23 },
+      "id": 103,
+      "panels": [],
+      "title": "网络 对比",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "当前宿主机（及过滤范围）上所有虚机的网络接收速率（各 interface 求和），一条线一台虚机。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "mode": "none", "group": "A" },
+            "axisCenteredZero": false,
+            "hideFrom": { "tooltip": false, "viz": false, "legend": false },
+            "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "unit": "Bps",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "id": 9,
+      "options": {
+        "legend": {
+          "calcs": ["lastNotNull"],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "uvmp:vm:net_receive_bytes:rate5m{idc=~\"$idc\", instance=~\"$host\", biz1=~\"$biz1\", biz2=~\"$biz2\"}",
+          "legendFormat": "{{vm_ip}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "网络接收速率对比 (vm_ip)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "当前宿主机（及过滤范围）上所有虚机的网络发送速率（各 interface 求和），一条线一台虚机。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "mode": "none", "group": "A" },
+            "axisCenteredZero": false,
+            "hideFrom": { "tooltip": false, "viz": false, "legend": false },
+            "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "unit": "Bps",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "id": 10,
+      "options": {
+        "legend": {
+          "calcs": ["lastNotNull"],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "uvmp:vm:net_transmit_bytes:rate5m{idc=~\"$idc\", instance=~\"$host\", biz1=~\"$biz1\", biz2=~\"$biz2\"}",
+          "legendFormat": "{{vm_ip}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "网络发送速率对比 (vm_ip)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 32 },
+      "id": 104,
+      "panels": [],
+      "title": "虚机明细",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "当前过滤范围内所有虚机的内存使用率明细，含所有者/CMDB状态（owner/status 从 blackbox 拨测标签关联）。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": {
+            "align": "auto",
+            "cellOptions": { "type": "auto" },
+            "filterable": true,
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 80 },
+              { "color": "red", "value": 90 }
+            ]
+          },
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 33 },
+      "id": 11,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": ["count"],
+          "show": true
+        },
+        "showHeader": true,
+        "sortBy": [
+          { "desc": true, "displayName": "内存使用率" }
+        ]
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "uvmp:vm:memory_used_percent{idc=~\"$idc\", instance=~\"$host\", biz1=~\"$biz1\", biz2=~\"$biz2\"}",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "虚机资源明细（内存使用率）",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "type": true,
+              "os": true,
+              "biz1": true,
+              "biz2": true,
+              "domain": true
+            },
+            "includeByName": {},
+            "indexByName": {
+              "vm_ip": 0,
+              "instance": 1,
+              "idc": 2,
+              "owner": 3,
+              "status": 4,
+              "Value": 5
+            },
+            "renameByName": {
+              "vm_ip": "虚机 IP",
+              "instance": "宿主机",
+              "idc": "机房",
+              "owner": "所有者",
+              "status": "CMDB状态",
+              "Value": "内存使用率"
+            }
+          }
+        }
+      ],
+      "type": "table"
+    }
+  ],
+  "refresh": "1m",
+  "schemaVersion": 41,
+  "tags": ["uvmp", "libvirt", "vm", "resource"],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+        "definition": "label_values(libvirt_domain_info_state, idc)",
+        "hide": 0,
+        "includeAll": true,
+        "allValue": ".*",
+        "label": "机房 (idc)",
+        "multi": true,
+        "name": "idc",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(libvirt_domain_info_state, idc)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": {},
+        "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+        "definition": "label_values(libvirt_domain_info_state{idc=~\"$idc\"}, instance)",
+        "hide": 0,
+        "includeAll": true,
+        "allValue": ".*",
+        "label": "宿主机 (host)",
+        "multi": true,
+        "name": "host",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(libvirt_domain_info_state{idc=~\"$idc\"}, instance)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": {},
+        "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+        "definition": "label_values(probe_success{job=\"blackbox-icmp\", type=\"vm\", idc=~\"$idc\"}, biz1)",
+        "hide": 0,
+        "includeAll": true,
+        "allValue": ".*",
+        "label": "一级业务 (biz1)",
+        "multi": true,
+        "name": "biz1",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(probe_success{job=\"blackbox-icmp\", type=\"vm\", idc=~\"$idc\"}, biz1)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": {},
+        "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+        "definition": "label_values(probe_success{job=\"blackbox-icmp\", type=\"vm\", idc=~\"$idc\", biz1=~\"$biz1\"}, biz2)",
+        "hide": 0,
+        "includeAll": true,
+        "allValue": ".*",
+        "label": "二级业务 (biz2)",
+        "multi": true,
+        "name": "biz2",
+        "options": [],
+        "query": {
+          "qryType": 1,
+          "query": "label_values(probe_success{job=\"blackbox-icmp\", type=\"vm\", idc=~\"$idc\", biz1=~\"$biz1\"}, biz2)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": { "from": "now-3h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "UVMP 虚机资源 (libvirt)",
+  "uid": "uvmp-vm-resource",
+  "version": 1,
+  "weekStart": ""
+}

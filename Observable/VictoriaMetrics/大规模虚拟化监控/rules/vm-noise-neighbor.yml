@@ -1,0 +1,110 @@
+# vm-noise-neighbor.yml — 虚机/宿主机资源监控 recording rules（仅预计算，无告警）
+#
+# 数据来源：
+#   虚机   → 宿主机侧 libvirt_exporter（prometheus.yml 的 libvirt-vm job，端口 9177）
+#   宿主机 → node_exporter（prometheus.yml 的 node-exporter job，端口 9100）
+#
+# 标签约定：
+#   instance      = 宿主机 IP
+#   domain        = 虚机名（10-89-132-21，IP 转横杠）
+#   vm_ip         = 虚机 IP（10.89.132.21，由 domain 经 metric_relabel 转换）
+#   target_device = 虚机网卡名 / 磁盘设备名（libvirt 暴露 domain XML 里挂的网卡 eth0/eth1… 与磁盘 vda/vdb…）
+#   device        = 宿主机网卡 / 磁盘块设备名（node_exporter）
+#
+# 指标名以 kumina/libvirt_exporter 为准；部署后先验证：
+#   curl -s localhost:9177/metrics | grep -E 'libvirt_domain_(info_cpu_time|interface_stats|block_stats)'
+
+groups:
+  - name: vm-resource
+    interval: 30s
+    rules:
+      # ============ 虚机：网卡速率（入/出，按虚机 + 网卡名） ============
+      - record: vm:nic_rx_bytes:rate5m
+        expr: sum by (instance, vm_ip, target_device) (rate(libvirt_domain_interface_stats_receive_bytes_total[5m]))
+      - record: vm:nic_tx_bytes:rate5m
+        expr: sum by (instance, vm_ip, target_device) (rate(libvirt_domain_interface_stats_transmit_bytes_total[5m]))
+
+      # ============ 虚机：CPU 占用核数 ============
+      # rate(cpu_time) = 每秒消耗的 CPU 秒数 = 占用核数（绝对值，找噪声邻居用这个）
+      - record: vm:cpu_cores_used:rate5m
+        expr: sum by (instance, vm_ip) (rate(libvirt_domain_info_cpu_time_seconds_total[5m]))
+
+      # ============ 虚机：磁盘 IO（按虚机 + 磁盘设备名，即 lsblk 里看到的 vda/vdb…） ============
+      - record: vm:disk_read_bytes:rate5m
+        expr: sum by (instance, vm_ip, target_device) (rate(libvirt_domain_block_stats_read_bytes_total[5m]))
+      - record: vm:disk_write_bytes:rate5m
+        expr: sum by (instance, vm_ip, target_device) (rate(libvirt_domain_block_stats_write_bytes_total[5m]))
+
+  # ============ 虚机资源指标 + CMDB 业务标签 预计算（给 Grafana 加速） ============
+  # 背景：Grafana 每个面板都做 and on(vm_ip) label_replace(probe_success{type="vm"}...)，
+  #       要扫全量 ~3 万条 blackbox 虚机序列，极慢。这里预先 join 好，面板直接查 uvmp:vm:*。
+  # join 键：libvirt 的 vm_ip == blackbox 虚机的 instance（都是虚机 IP）。
+  # libvirt 侧 biz1/biz2 是硬编码(uvmp/vmzone)且缺 owner/status，真实 CMDB 标签来自 blackbox。
+  # group_left 注入 biz1/biz2/owner/status；用 (uvmp:vm_info > -1) 把锚点值变 1，乘法不改变左值。
+  - name: uvmp-vm-enrich
+    interval: 1m
+    rules:
+      # join 锚点：一条 blackbox 虚机一个序列，值=probe_success(0/1)，携带真实 CMDB 标签
+      - record: uvmp:vm_info
+        expr: label_replace(probe_success{job="blackbox-icmp", type="vm"}, "vm_ip", "$1", "instance", "(.+)")
+
+      # CPU 利用率（%）：rate(domain 总 cpu 秒)=占用核数，除以 vCPU 配置再 ×100
+      - record: uvmp:vm:cpu_percent
+        expr: |
+          (
+            100 * sum by (vm_ip, instance, idc, domain) (rate(libvirt_domain_info_cpu_time_seconds_total[5m]))
+            / sum by (vm_ip, instance, idc, domain) (libvirt_domain_info_virtual_cpus)
+          )
+          * on(vm_ip) group_left(biz1, biz2, owner, status) (uvmp:vm_info > -1)
+
+      # vCPU 核数（同时用作「虚机数」计数——每台虚机一个序列）
+      - record: uvmp:vm:vcpus
+        expr: |
+          sum by (vm_ip, instance, idc, domain) (libvirt_domain_info_virtual_cpus)
+          * on(vm_ip) group_left(biz1, biz2, owner, status) (uvmp:vm_info > -1)
+
+      # 内存使用率（%）
+      - record: uvmp:vm:memory_used_percent
+        expr: |
+          sum by (vm_ip, instance, idc, domain) (libvirt_domain_memory_stats_used_percent)
+          * on(vm_ip) group_left(biz1, biz2, owner, status) (uvmp:vm_info > -1)
+
+      # 磁盘读/写速率（各 block 设备求和后按虚机）
+      - record: uvmp:vm:disk_read_bytes:rate5m
+        expr: |
+          sum by (vm_ip, instance, idc, domain) (rate(libvirt_domain_block_stats_read_bytes_total[5m]))
+          * on(vm_ip) group_left(biz1, biz2, owner, status) (uvmp:vm_info > -1)
+      - record: uvmp:vm:disk_write_bytes:rate5m
+        expr: |
+          sum by (vm_ip, instance, idc, domain) (rate(libvirt_domain_block_stats_write_bytes_total[5m]))
+          * on(vm_ip) group_left(biz1, biz2, owner, status) (uvmp:vm_info > -1)
+
+      # 网络收/发速率（各 interface 求和后按虚机）
+      - record: uvmp:vm:net_receive_bytes:rate5m
+        expr: |
+          sum by (vm_ip, instance, idc, domain) (rate(libvirt_domain_interface_stats_receive_bytes_total[5m]))
+          * on(vm_ip) group_left(biz1, biz2, owner, status) (uvmp:vm_info > -1)
+      - record: uvmp:vm:net_transmit_bytes:rate5m
+        expr: |
+          sum by (vm_ip, instance, idc, domain) (rate(libvirt_domain_interface_stats_transmit_bytes_total[5m]))
+          * on(vm_ip) group_left(biz1, biz2, owner, status) (uvmp:vm_info > -1)
+
+# =====================================================================
+# Grafana 面板 PromQL（采集全量网卡，面板里按需只显示有流量的）
+# =====================================================================
+# 【虚机 - 网卡速率】逐网卡，带 target_device 名；只显示有流量(>1KB/s)的：
+#   入: vm:nic_rx_bytes:rate5m > 1024
+#   出: vm:nic_tx_bytes:rate5m > 1024
+#   （图例 {{ vm_ip }}/{{ target_device }}）
+#
+# 【虚机 - CPU 占用核数】：
+#   vm:cpu_cores_used:rate5m
+#   （归一化为利用率：vm:cpu_cores_used:rate5m / sum by (instance, domain) (libvirt_domain_info_virtual_cpus) * 100）
+#
+# 【虚机 - 磁盘 IO】按虚机 + 磁盘设备名（vda/vdb…）：
+#   读: vm:disk_read_bytes:rate5m > 1024
+#   写: vm:disk_write_bytes:rate5m > 1024
+#
+# 【定位噪声邻居】宿主机 CPU 高时，top 虚机排序：
+#   topk(5, sum by (vm_ip) (vm:cpu_cores_used:rate5m)
+#     and on(instance) (instance == "$host_ip"))

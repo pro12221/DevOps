@@ -1,0 +1,131 @@
+# deploy-host-exporters.yml — 把 libvirt_exporter + node_exporter 部署到所有 KVM 宿主机
+#
+# 用法:
+#   cd ansible
+#   ansible-playbook -i hosts.ini deploy-host-exporters.yml
+#
+# 单台验证:
+#   ansible-playbook -i hosts.ini deploy-host-exporters.yml --limit 10.89.132.21
+#
+# 二进制来自上级目录 bin/（linux/amd64 静态链接，无需编译环境）:
+#   libvirt_exporter  (inovex/prometheus-libvirt-exporter v2.3.1)  端口 9177
+#   node_exporter     (v1.12.1)                                    端口 9100
+#
+# 宿主机跑的虚机不装任何 agent：
+#   - node_exporter 采宿主机自身 CPU/内存/磁盘/网卡
+#   - libvirt_exporter 从 libvirtd 采每个虚机(domain)的指标
+
+- name: 部署宿主机侧 exporters (libvirt + node)
+  hosts: production_exporter_hosts:testing_exporter_hosts
+  become: true
+
+  vars:
+    bin_dir: "{{ playbook_dir }}/../bin"
+    exporter_install_dir: /usr/local/bin
+    node_exporter_port: 9100
+    libvirt_exporter_port: 9177
+    libvirt_socket: /var/run/libvirt/libvirt-sock-ro
+
+  tasks:
+    - name: 分发 libvirt_exporter
+      ansible.builtin.copy:
+        src: "{{ bin_dir }}/libvirt_exporter"
+        dest: "{{ exporter_install_dir }}/libvirt_exporter"
+        mode: "0755"
+      notify: 重启 libvirt-exporter
+
+    - name: 分发 node_exporter
+      ansible.builtin.copy:
+        src: "{{ bin_dir }}/node_exporter"
+        dest: "{{ exporter_install_dir }}/node_exporter"
+        mode: "0755"
+      notify: 重启 node-exporter
+
+    - name: 安装 libvirt-exporter systemd unit
+      ansible.builtin.copy:
+        content: |
+          [Unit]
+          Description=libvirt_exporter - per-VM metrics from host-side libvirt
+          After=network-online.target libvirtd.service
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          # inovex 版: --libvirt.uri 是 socket 路径，驱动由 --libvirt.driver 控制(默认 qemu:///system)
+          ExecStart={{ exporter_install_dir }}/libvirt_exporter --libvirt.uri={{ libvirt_socket }} --web.listen-address=:{{ libvirt_exporter_port }}
+          Restart=on-failure
+          RestartSec=5
+          LimitNOFILE=65536
+          NoNewPrivileges=true
+
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/systemd/system/libvirt-exporter.service
+        mode: "0644"
+      notify: 重启 libvirt-exporter
+
+    - name: 安装 node-exporter systemd unit
+      ansible.builtin.copy:
+        content: |
+          [Unit]
+          Description=node_exporter - host metrics
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          ExecStart={{ exporter_install_dir }}/node_exporter --web.listen-address=:{{ node_exporter_port }}
+          Restart=on-failure
+          RestartSec=5
+          NoNewPrivileges=true
+
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/systemd/system/node-exporter.service
+        mode: "0644"
+      notify: 重启 node-exporter
+
+    - name: 启动并开机自启
+      ansible.builtin.systemd:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+        daemon_reload: true
+      loop:
+        - libvirt-exporter
+        - node-exporter
+
+    - name: 验证 node_exporter 指标
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ node_exporter_port }}/metrics"
+      register: node_check
+      retries: 3
+      delay: 2
+      until: node_check.status == 200
+
+    - name: 验证 libvirt_exporter domain 指标
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ libvirt_exporter_port }}/metrics"
+        return_content: true
+      register: libvirt_check
+      retries: 3
+      delay: 2
+      until: libvirt_check.status == 200
+
+    - name: 报告无 domain 指标的主机（服务活着但采不到虚机）
+      ansible.builtin.debug:
+        msg: "WARN: 9177 有响应但无 libvirt_domain 指标，检查 libvirtd 是否运行 / socket 权限"
+      when: "'libvirt_domain' not in libvirt_check.content"
+
+  handlers:
+    - name: 重启 libvirt-exporter
+      ansible.builtin.systemd:
+        name: libvirt-exporter
+        state: restarted
+        daemon_reload: true
+
+    - name: 重启 node-exporter
+      ansible.builtin.systemd:
+        name: node-exporter
+        state: restarted
+        daemon_reload: true

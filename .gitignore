@@ -1,1 +1,8 @@
 .openclaude/
+
+# Downloaded deployment archives
+Observable/VictoriaMetrics/大规模虚拟化监控/bin/*.tar.gz
+
+# Python caches
+__pycache__/
+*.py[cod]
