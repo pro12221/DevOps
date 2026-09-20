@@ -1,8 +1,30 @@
+# prometheus-testing.yml — 测试环境 vmagent 抓取配置
+#
+# 用途: 测试拨测机上的 vmagent 使用此配置。
+#       deploy-vm.yml 按 vmagent_role 变量选择本文件(testing)或 prometheus-production.yml(production)，
+#       分发到目标机的 /etc/vmagent/prometheus.yml。
+#
+# 与生产配置的区别:
+#   1. 多了 blackbox-icmp / blackbox-tcp 两个拨测 job（ICP/TCP 拨测由测试机承担）
+#   2. 两个 blackbox job 都用 keep 规则只保留 environment=testing 的目标，
+#      避免 file_sd 文件里混入其他环境的目标时误拨测
+#   3. remote_write 指向生产存储 10.69.81.68:8428（由 deploy-vm.yml 的 remote_write_url 渲染）
+#
+# file_sd 文件由 cmdb-sd.py（cron 每 10 分钟）生成到 /data/targets/:
+#   blackbox-icmp.json   → 拨测目标（测试虚机+宿主机全量，含 environment/os 等标签）
+#   blackbox-tcp.json    → TCP 拨测目标
+#   testing-node.json    → 测试宿主机 node_exporter 列表（:9100）
+#   testing-libvirt.json → 测试宿主机 libvirt_exporter 列表（:9177）
+
 global:
+  # 全局默认抓取间隔/超时，与生产配置保持一致
   scrape_interval: 30s
   scrape_timeout: 10s
 
 scrape_configs:
+  # ============ ICMP 拨测（ping，测试虚机+宿主机） ============
+  # blackbox_exporter 以 /probe?target=<IP>&module=icmp 方式工作:
+  # vmagent 通过 relabel 把目标 IP 塞进 __param_target，再把实际抓取地址改写为黑盒自身
   - job_name: blackbox-icmp
     metrics_path: /probe
     params:
@@ -10,17 +32,28 @@ scrape_configs:
     file_sd_configs:
       - files: [/data/targets/blackbox-icmp.json]
     relabel_configs:
+      # 只保留测试环境目标（cmdb-sd.py 已按环境打 environment 标签）
+      - source_labels: [environment]
+        regex: testing
+        action: keep
+      # 目标 IP 写入 __param_target，让 blackbox 知道 ping 谁
       - source_labels: [__address__]
         target_label: __param_target
+      # instance 显示目标真实 IP，而非黑盒地址
       - source_labels: [__param_target]
         target_label: instance
+      # 实际抓取地址固定为黑盒自身 :9115（blackbox_exporter 与 vmagent 同机）
       - target_label: __address__
         replacement: 127.0.0.1:9115
+      # 拨测来源标记，区分是哪台拨测机发的探测
       - target_label: probe_source
         replacement: testing
+      # 数据来源标记
       - target_label: scrape_source
         replacement: testing
 
+  # ============ TCP 拨测（端口连通性） ============
+  # 根据 os 标签决定探测端口: Linux 探 22(SSH)，Windows 探 3389(RDP)
   - job_name: blackbox-tcp
     metrics_path: /probe
     params:
@@ -28,39 +61,57 @@ scrape_configs:
     file_sd_configs:
       - files: [/data/targets/blackbox-tcp.json]
     relabel_configs:
+      # 只保留测试环境目标
+      - source_labels: [environment]
+        regex: testing
+        action: keep
+      # instance 显示目标真实 IP
       - source_labels: [__address__]
         target_label: instance
+      # 默认探测端口 22(SSH)
       - source_labels: [__address__]
         target_label: __param_target
         replacement: ${1}:22
+      # Windows 虚机改探 3389(RDP)，后写的 relabel 覆盖前写
       - source_labels: [__address__, os]
         regex: (.*);windows
         target_label: __param_target
         replacement: ${1}:3389
+      # 实际抓取地址固定为黑盒自身 :9115
       - target_label: __address__
         replacement: 127.0.0.1:9115
+      # 拨测来源标记
       - target_label: probe_source
         replacement: testing
+      # 数据来源标记
       - target_label: scrape_source
         replacement: testing
 
+  # ============ 测试宿主机 node_exporter ============
+  # targets 为宿主机 IP，instance 显示宿主机真实 IP 而不是 IP:9100
   - job_name: node-exporter
     file_sd_configs:
       - files: [/data/targets/testing-node.json]
     relabel_configs:
       - source_labels: [__address__]
         target_label: instance
+      # 打上环境标签，Grafana 按环境区分；scrape_source 标记数据由哪台 vmagent 采集
       - target_label: environment
         replacement: testing
       - target_label: scrape_source
         replacement: testing
 
+  # ============ 测试宿主机 libvirt_exporter（虚机指标） ============
+  # file_sd 目标是宿主机 IP，改写端口为 :9177；host_ip 标签保留宿主机 IP，
+  # 让虚机指标既能按虚机(vm_ip/domain)也能按宿主机(host_ip)聚合
   - job_name: libvirt-vm
     file_sd_configs:
       - files: [/data/targets/testing-libvirt.json]
     relabel_configs:
+      # host_ip 标签 = 宿主机 IP（虚机指标↔宿主机的关联键）
       - source_labels: [__address__]
         target_label: host_ip
+      # 实际抓取地址 = 宿主机 IP + :9177（libvirt_exporter 端口）
       - source_labels: [__address__]
         target_label: __address__
         replacement: ${1}:9177
@@ -69,26 +120,33 @@ scrape_configs:
       - target_label: scrape_source
         replacement: testing
 
+  # ============ 组件自监控（测试拨测机本机组件） ============
+  # 测试机 vmagent 顺带抓取本机各组件自身指标，统一入库供自监控面板使用；
+  # 测试机不部署 VM 存储/vmalert，故只监控本机实际存在的四个组件
   - job_name: self-monitoring
     static_configs:
+      # vmagent 自身指标（队列深度、抓取错误数等）
       - targets:
           - 127.0.0.1:8429
         labels:
           component: vmagent
           environment: testing
           scrape_source: testing
+      # blackbox_exporter 自身指标（探针并发、失败数等）
       - targets:
           - 127.0.0.1:9115
         labels:
           component: blackbox-exporter
           environment: testing
           scrape_source: testing
+      # 本机 node_exporter 自身指标
       - targets:
           - 127.0.0.1:9100
         labels:
           component: node-exporter
           environment: testing
           scrape_source: testing
+      # 本机 libvirt_exporter 自身指标
       - targets:
           - 127.0.0.1:9177
         labels:

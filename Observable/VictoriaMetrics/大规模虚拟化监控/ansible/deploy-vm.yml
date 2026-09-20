@@ -14,7 +14,7 @@
 #   生产 vmagent  →  生产 exporter  →  127.0.0.1:8428
 #   测试 vmagent  →  测试 exporter/blackbox → 10.69.81.68:8428
 #
-# 前置: cmdb-sd.py 已内置 CMDB api-key（内部使用），仅依赖 python3，无需传参。
+# 前置: 在执行 Ansible 的控制端设置 CMDB_API_KEY；目标机仅依赖 python3。
 
 - name: 部署 VictoriaMetrics + vmagent + vmalert
   hosts: vm_storage:vmagent_production:vmagent_testing:vmalert
@@ -28,6 +28,9 @@
     data_dir: /data/vm
     targets_dir: /data/targets
     config_dir: /etc/vmagent
+    remote_write_tmp_dir: /data/vmagent-queue
+    cmdb_env_file: /etc/vmagent/cmdb-sd.env
+    cmdb_api_key: "{{ lookup('ansible.builtin.env', 'CMDB_API_KEY') }}"
     vmalert_port: 8880
     rules_dir: /etc/vmalert/rules
     retention: 30d
@@ -49,6 +52,14 @@
           -e testing_idc_prefix=... 覆盖。
       when: "'vmagent_production' in group_names or 'vmagent_testing' in group_names"
 
+    - name: 校验 CMDB API Key
+      ansible.builtin.assert:
+        that:
+          - cmdb_api_key | trim | length > 0
+        fail_msg: >-
+          控制端未设置 CMDB_API_KEY，请先执行 export CMDB_API_KEY='实际密钥'
+      when: "'vmagent_production' in group_names or 'vmagent_testing' in group_names"
+
     - name: 确保数据/配置目录存在
       ansible.builtin.file:
         path: "{{ item }}"
@@ -56,7 +67,7 @@
         mode: "0755"
       loop: >-
         {{ ([data_dir] if 'vm_storage' in group_names else [])
-           + ([targets_dir, config_dir] if ('vmagent_production' in group_names or 'vmagent_testing' in group_names) else [])
+           + ([targets_dir, config_dir, remote_write_tmp_dir] if ('vmagent_production' in group_names or 'vmagent_testing' in group_names) else [])
            + ([rules_dir] if 'vmalert' in group_names else []) }}
 
     - name: 分发 victoria-metrics-prod
@@ -96,6 +107,16 @@
         src: "{{ playbook_dir }}/../cmdb-sd.py"
         dest: "{{ config_dir }}/cmdb-sd.py"
         mode: "0755"
+      when: "'vmagent_production' in group_names or 'vmagent_testing' in group_names"
+
+    - name: 分发 CMDB 环境文件
+      ansible.builtin.copy:
+        content: "CMDB_API_KEY={{ cmdb_api_key | trim | quote }}\n"
+        dest: "{{ cmdb_env_file }}"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
       when: "'vmagent_production' in group_names or 'vmagent_testing' in group_names"
 
     - name: 分发 vmalert 规则文件
@@ -151,12 +172,11 @@
           After=network-online.target
           Wants=network-online.target
           # file_sd 还没生成时 vmagent 起来也没目标，失败无妨，稍后 cron 补上
-          StartLimitIntervalSec=0
 
           [Service]
           Type=simple
           # fileSDCheckInterval: targets.json 变更检测间隔（vmagent 的 yaml 里不再支持 refresh_interval 字段）
-          ExecStart={{ install_dir }}/vmagent-prod --promscrape.config={{ config_dir }}/prometheus.yml --promscrape.fileSDCheckInterval=5m --remoteWrite.url={{ remote_write_url }} --httpListenAddr=0.0.0.0:{{ vmagent_port }}
+          ExecStart={{ install_dir }}/vmagent-prod --promscrape.config={{ config_dir }}/prometheus.yml --promscrape.fileSDCheckInterval=5m --remoteWrite.url={{ remote_write_url }} --remoteWrite.tmpDataPath={{ remote_write_tmp_dir }} --httpListenAddr=0.0.0.0:{{ vmagent_port }}
           Restart=on-failure
           RestartSec=5
           LimitNOFILE=65536
@@ -198,7 +218,7 @@
       ansible.builtin.cron:
         name: cmdb-sd refresh
         minute: "*/10"
-        job: "TESTING_IDC_PREFIX='{{ testing_idc_prefix }}' TARGETS_DIR='{{ targets_dir }}' {{ config_dir }}/cmdb-sd.py >> /var/log/cmdb-sd.log 2>&1"
+        job: ". {{ cmdb_env_file }}; TESTING_IDC_PREFIX='{{ testing_idc_prefix }}' TARGETS_DIR='{{ targets_dir }}' {{ config_dir }}/cmdb-sd.py >> /var/log/cmdb-sd.log 2>&1"
         state: present
       when: "'vmagent_production' in group_names or 'vmagent_testing' in group_names"
 
@@ -206,11 +226,12 @@
       ansible.builtin.command:
         cmd: "{{ config_dir }}/cmdb-sd.py"
       environment:
+        CMDB_API_KEY: "{{ cmdb_api_key }}"
         TESTING_IDC_PREFIX: "{{ testing_idc_prefix }}"
         TARGETS_DIR: "{{ targets_dir }}"
       register: sd_first_run
       changed_when: sd_first_run.stdout is search('生成')
-      failed_when: false
+      failed_when: sd_first_run.rc != 0
       when: "'vmagent_production' in group_names or 'vmagent_testing' in group_names"
 
     - name: 启动 VictoriaMetrics 并开机自启
@@ -225,7 +246,7 @@
       ansible.builtin.systemd:
         name: vmagent
         enabled: true
-        state: started
+        state: restarted
         daemon_reload: true
       when: "'vmagent_production' in group_names or 'vmagent_testing' in group_names"
 

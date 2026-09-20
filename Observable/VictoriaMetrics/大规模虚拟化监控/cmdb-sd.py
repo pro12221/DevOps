@@ -113,6 +113,25 @@ def vm_entry(r, environment):
     }
 
 
+def blackbox_entry(r, environment, target_type):
+    """CMDB 记录 -> Blackbox file_sd 条目，保留 Grafana 所需业务标签。"""
+    labels = {
+        "type": target_type,
+        "environment": environment,
+        "idc": r.get("IDC") or "",
+        "biz1": r.get("Usage") or "",
+        "biz2": r.get("SecUsage") or "",
+        "os": "windows" if "win" in (r.get("OS") or "").lower() else "linux",
+    }
+    if target_type == "vm":
+        labels.update({
+            "owner": r.get("Owner") or "",
+            "status": r.get("OperationalStatus") or "",
+            "host_ip": r.get("BelongsTo") or "",
+        })
+    return {"targets": [r["IP"]], "labels": labels}
+
+
 def write_targets(path, entries):
     """原子写入 file_sd 文件，避免 vmagent 读到半截文件。"""
     out_dir = os.path.dirname(os.path.abspath(path))
@@ -130,7 +149,9 @@ def write_targets(path, entries):
 
 
 def classify_environment(record):
+    """按 IDC 前缀把记录归入 testing / production，空 IDC 返回 None（丢弃）。"""
     idc = (record.get("IDC") or "").strip()
+    # 测试机房以 TEST 开头（前缀可由 TESTING_IDC_PREFIX 环境变量覆盖）
     if idc.startswith(TESTING_IDC_PREFIX):
         return "testing"
     if idc:
@@ -139,13 +160,16 @@ def classify_environment(record):
 
 
 def main():
+    # 拉全量宿主机 + 虚机，过滤无 IP 的脏数据
     hosts = [r for r in fetch_all(CATEGORY_HOST, HOST_QUERY, HOST_FIELDS) if r.get("IP")]
     vms = [r for r in fetch_all(CATEGORY_VM, VM_QUERY, VM_FIELDS) if r.get("IP")]
 
+    # IDC 变量非空时按机房收窄范围
     if IDC:
         hosts = [r for r in hosts if r.get("IDC") == IDC]
         vms = [r for r in vms if r.get("IDC") == IDC]
 
+    # 按环境分桶；blackbox 列表同时记录目标类型(host/vm)，虚机和宿主机都要拨测
     environment_hosts = {"production": [], "testing": []}
     environment_vms = {"production": [], "testing": []}
     blackbox = []
@@ -153,29 +177,27 @@ def main():
         environment = classify_environment(record)
         if environment:
             environment_hosts[environment].append(record)
-            blackbox.append((record, environment))
+            blackbox.append((record, environment, "host"))
     for record in vms:
         environment = classify_environment(record)
         if environment:
             environment_vms[environment].append(record)
-            blackbox.append((record, environment))
+            blackbox.append((record, environment, "vm"))
 
+    # 六个 file_sd 文件: node/libvirt 按环境拆分，blackbox 两个文件包含全部环境
+    # （环境的过滤交给 vmagent relabel 的 keep 规则，文件本身不拆，减少重复）
     outputs = {
         "production-node.json": [host_entry(r, "production") for r in environment_hosts["production"]],
         "production-libvirt.json": [host_entry(r, "production") for r in environment_hosts["production"]],
         "testing-node.json": [host_entry(r, "testing") for r in environment_hosts["testing"]],
         "testing-libvirt.json": [host_entry(r, "testing") for r in environment_hosts["testing"]],
         "blackbox-icmp.json": [
-            {"targets": [r["IP"]], "labels": {"environment": environment, "type": r.get("type", "target")}}
-            for r, environment in blackbox
+            blackbox_entry(r, environment, target_type)
+            for r, environment, target_type in blackbox
         ],
         "blackbox-tcp.json": [
-            {"targets": [r["IP"]], "labels": {
-                "environment": environment,
-                "type": r.get("type", "target"),
-                "os": "windows" if "win" in (r.get("OS") or "").lower() else "linux",
-            }}
-            for r, environment in blackbox
+            blackbox_entry(r, environment, target_type)
+            for r, environment, target_type in blackbox
         ],
     }
     for filename, entries in outputs.items():

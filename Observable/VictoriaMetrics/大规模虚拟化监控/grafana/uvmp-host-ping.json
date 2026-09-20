@@ -105,7 +105,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
           "editorMode": "code",
-          "expr": "count(probe_success{job=\"blackbox-icmp\", type=\"host\", idc=~\"$idc\", instance=~\"$host\"})",
+          "expr": "count(up{job=\"blackbox-icmp\", type=\"host\", idc=~\"$idc\", instance=~\"$host\"})",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -158,7 +158,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
           "editorMode": "code",
-          "expr": "avg(probe_success{job=\"blackbox-icmp\", type=\"host\", idc=~\"$idc\", instance=~\"$host\"})",
+          "expr": "avg(avg_over_time(probe_success{job=\"blackbox-icmp\", type=\"host\", idc=~\"$idc\", instance=~\"$host\"}[2m]))",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -211,7 +211,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
           "editorMode": "code",
-          "expr": "avg(probe_success{job=\"blackbox-tcp\", type=\"host\", idc=~\"$idc\", instance=~\"$host\"})",
+          "expr": "avg(avg_over_time(probe_success{job=\"blackbox-tcp\", type=\"host\", idc=~\"$idc\", instance=~\"$host\"}[2m]))",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -262,7 +262,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
           "editorMode": "code",
-          "expr": "count(probe_success{job=\"blackbox-icmp\", type=\"host\", idc=~\"$idc\", instance=~\"$host\"} == 0) or vector(0)",
+          "expr": "count(avg_over_time(probe_success{job=\"blackbox-icmp\", type=\"host\", idc=~\"$idc\", instance=~\"$host\"}[2m]) == 0) or vector(0)",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -313,7 +313,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
           "editorMode": "code",
-          "expr": "count(probe_success{job=\"blackbox-tcp\", type=\"host\", idc=~\"$idc\", instance=~\"$host\"} == 0) or vector(0)",
+          "expr": "count(avg_over_time(probe_success{job=\"blackbox-tcp\", type=\"host\", idc=~\"$idc\", instance=~\"$host\"}[2m]) == 0) or vector(0)",
           "instant": true,
           "legendFormat": "",
           "range": false,
@@ -381,7 +381,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
           "editorMode": "code",
-          "expr": "probe_success{job=\"blackbox-icmp\", type=\"host\", idc=~\"$idc\", instance=~\"$host\"} $state",
+          "expr": "avg_over_time(probe_success{job=\"blackbox-icmp\", type=\"host\", idc=~\"$idc\", instance=~\"$host\"}[2m]) $state",
           "format": "table",
           "instant": true,
           "range": false,
@@ -477,7 +477,7 @@
         {
           "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
           "editorMode": "code",
-          "expr": "probe_success{job=\"blackbox-tcp\", type=\"host\", idc=~\"$idc\", instance=~\"$host\"} $state",
+          "expr": "avg_over_time(probe_success{job=\"blackbox-tcp\", type=\"host\", idc=~\"$idc\", instance=~\"$host\"}[2m]) $state",
           "format": "table",
           "instant": true,
           "range": false,

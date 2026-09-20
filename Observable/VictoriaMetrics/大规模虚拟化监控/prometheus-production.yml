@@ -1,27 +1,52 @@
+# prometheus-production.yml — 生产环境 vmagent 抓取配置
+#
+# 用途: 生产拨测机上的 vmagent 使用此配置（deploy-vm.yml 按 vmagent_role 选择本文件或 prometheus-testing.yml）。
+#
+# 采集范围（生产环境只挂 node_exporter + libvirt_exporter，拨测由测试机承担）:
+#   1. node-exporter  : 所有生产 KVM 宿主机(:9100)，采宿主机自身 CPU/内存/磁盘/网卡
+#   2. libvirt-vm     : 所有生产 KVM 宿主机(:9177)，采每台虚机(domain)的 CPU/内存/网卡/磁盘
+#   3. self-monitoring: 拨测机本机的 VM 三件套(vmagent/vmalert/victoria-metrics)，用于组件自监控
+#
+# file_sd 文件由 cmdb-sd.py（cron 每 10 分钟）生成到 /data/targets/：
+#   production-node.json    → 宿主机目标（端口 9100）
+#   production-libvirt.json → 宿主机目标（端口 9177）
+#
+# 数据流向: vmagent 抓取 → remote_write 到 127.0.0.1:8428（同机 VictoriaMetrics，单机版）
+
 global:
+  # 全局默认抓取间隔/超时（30s 间隔下，单机版 VM 面对多目标仍绰绰有余）
   scrape_interval: 30s
   scrape_timeout: 10s
 
 scrape_configs:
+  # ============ 生产宿主机 node_exporter ============
+  # targets 为宿主机 IP，实例以宿主机 IP 展示，与 libvirt-vm/blackbox 对齐
   - job_name: node-exporter
     file_sd_configs:
       - files: [/data/targets/production-node.json]
     relabel_configs:
+      # instance 标签显示宿主机真实 IP，而不是 IP:9100
       - source_labels: [__address__]
         target_label: instance
+      # 打上环境标签，Grafana 按环境区分；scrape_source 标记数据由哪台 vmagent 采集
       - target_label: environment
         replacement: production
       - target_label: scrape_source
         replacement: production
 
+  # ============ 生产宿主机 libvirt_exporter（虚机指标） ============
+  # targets 同样是宿主机 IP，端口改写为 :9177；host_ip 标签保留宿主机 IP，
+  # 让虚机指标既能按虚机(vm_ip/domain)也能按宿主机(host_ip)聚合
   - job_name: libvirt-vm
     file_sd_configs:
       - files: [/data/targets/production-libvirt.json]
     relabel_configs:
+      # 实际抓取地址 = 宿主机 IP + :9177（libvirt_exporter 端口）
       - source_labels: [__address__]
         target_label: __address__
         regex: (.*)
         replacement: ${1}:9177
+      # host_ip 标签 = 宿主机 IP（虚机指标接宿主机的关联键）
       - source_labels: [__address__]
         target_label: host_ip
       - target_label: environment
@@ -29,20 +54,25 @@ scrape_configs:
       - target_label: scrape_source
         replacement: production
 
+  # ============ 组件自监控（拨测机本机） ============
+  # vmagent 顺带抓取本机的 VM 三件套自身指标，统一入库供自监控面板使用
   - job_name: self-monitoring
     static_configs:
+      # VictoriaMetrics TSDB 自身指标（单机版）
       - targets:
           - 127.0.0.1:8428
         labels:
           component: victoria-metrics
           environment: production
           scrape_source: production
+      # vmagent 自身指标（队列深度、抓取错误数等）
       - targets:
           - 127.0.0.1:8429
         labels:
           component: vmagent
           environment: production
           scrape_source: production
+      # vmalert 自身指标（规则求值错误等）
       - targets:
           - 127.0.0.1:8880
         labels:
