@@ -196,7 +196,7 @@ sequenceDiagram
 操作步骤的文字描述（截图位置：Authorization 矩阵表格整体）：
 
 1. Authorization 选择 `Matrix Authorization Strategy`（旧版为 Matrix-based security）。
-2. 点击 `Add user or group`，依次添加 `admin`、`devops`、`viewer` 三个用户（用户需先在 `Manage Jenkins` → `Users` 中创建，密码用占位符如 `<DELOPS_PASSWORD>`）。
+2. 点击 `Add user or group`，依次添加 `admin`、`devops`、`viewer` 三个用户（用户需先在 `Manage Jenkins` → `Users` 中创建，密码用占位符如 `<DEVOPS_PASSWORD>`）。
 3. 按下表勾选权限：
 
 | 权限项 | admin | devops | viewer |

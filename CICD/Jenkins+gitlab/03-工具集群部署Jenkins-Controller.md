@@ -24,7 +24,7 @@
 | `cicd` 命名空间已创建 | 部署目标命名空间 | `kubectl get ns cicd` |
 | 默认 StorageClass 已配置 | 自动创建 PVC | `kubectl get sc` 存在 `(default)` 标记 |
 | Gateway API CRD 与 Istio GatewayClass 就绪 | 暴露访问入口 | `kubectl get gatewayclass` 存在 `istio` |
-| 节点已按规划打标签 | 约束 Jenkins 调度 | `example.com/pool=infra` 节点存在 |
+| 节点已按规划打标签 | 约束 Jenkins 调度 | `example.com/pool=cicd` 节点存在 |
 | Helm 3 已安装（开发机） | 安装 Jenkins chart | `helm version` 正常输出 |
 | 开发机 `kubectl` 可访问集群 | 执行部署命令 | `kubectl get ns` 正常输出 |
 
@@ -226,7 +226,7 @@ helm show values jenkins/jenkins > jenkins-values-default.yaml
 2. 持久化 20Gi，使用默认 StorageClass。
 3. 资源 requests/limits 与 JVM 参数对齐。
 4. 预装课程后续章节需要的插件。
-5. 通过 nodeSelector 将 Controller 固定在 infra 节点池。
+5. 通过 nodeSelector 将 Controller 固定在 cicd 节点池。
 
 > 提醒：不同 chart 版本的字段名可能调整（例如 JVM 参数字段），以 `helm show values` 的实际输出为准。
 
@@ -369,15 +369,15 @@ controller:
     size: 20Gi
     storageClass: ""            # 空字符串 = 使用默认 StorageClass
 
-  # ---------- 调度：固定在 infra 节点池 ----------
+  # ---------- 调度：固定在 cicd 节点池（worker1） ----------
   nodeSelector:
-    example.com/pool: infra
-  # 若 infra 节点按第二章规划打了污点，需同时添加 tolerations：
-  # tolerations:
-  #   - key: example.com/pool
-  #     operator: Equal
-  #     value: infra
-  #     effect: NoSchedule
+    example.com/pool: cicd
+  # worker1 按 2.7.3 规划带有 dedicated=cicd:NoSchedule 污点，必须添加容忍度：
+  tolerations:
+    - key: dedicated
+      operator: Equal
+      value: cicd
+      effect: NoSchedule
 
   # ---------- 插件 ----------
   # 预装课程所需插件；插件的启用与详细配置在后续章节完成
