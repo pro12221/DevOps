@@ -225,8 +225,9 @@ helm show values jenkins/jenkins > jenkins-values-default.yaml
 1. Service 类型为 ClusterIP，暴露 8080（Web）与 50000（Agent 连接）。
 2. 持久化 20Gi，使用默认 StorageClass。
 3. 资源 requests/limits 与 JVM 参数对齐。
-4. 预装课程后续章节需要的插件。
+4. 预装课程后续章节需要的插件，并钉死版本号。
 5. 通过 nodeSelector 将 Controller 固定在 cicd 节点池。
+6. 把插件下载基址指向国内可达镜像（原因见 3.5.6）。
 
 > 提醒：不同 chart 版本的字段名可能调整（例如 JVM 参数字段），以 `helm show values` 的实际输出为准。
 
@@ -266,6 +267,24 @@ kubectl -n cicd get gateway,httproute
 echo "<GATEWAY_IP> jenkins.example.com" | sudo tee -a /etc/hosts
 ```
 
+> **kind 实验环境注记**：kind 没有 LoadBalancer 能力，Gateway 的 `ADDRESS` 一直为空属预期现象。本课程在第二章创建 kind 时已通过 `extraPortMappings` 把宿主机 30000 端口映射进集群，入口就走它。另外注意：Istio 的 Gateway API 模式会为每个 `Gateway` 资源在**同命名空间**生成专属的 Service 与 Deployment，名为 `<gateway名>-istio`（本例 `cicd/cicd-gateway-istio`），与 `istio-system/istio-ingressgateway` 是两个相互独立的入口，不要把流量打到后者上。把专属入口的 80 端口固定到 30000：
+>
+> ```bash
+> # 1. 若 30000/30001 被 istio-ingressgateway 随机占用，先把它挪到别的端口
+> #    （端口号任选未占用值；port 名以 kubectl get svc 输出为准）
+> kubectl -n istio-system patch svc istio-ingressgateway --type strategic \
+>   -p '{"spec":{"ports":[{"name":"http2","port":80,"nodePort":30642},{"name":"https","port":443,"nodePort":30643}]}}'
+>
+> # 2. 把本 Gateway 的专属 Service 固定到 30000
+> kubectl -n cicd patch svc cicd-gateway-istio --type strategic \
+>   -p '{"spec":{"ports":[{"name":"http","port":80,"nodePort":30000}]}}'
+>
+> # 3. hosts 指向回环即可（端口转发在宿主机完成）
+> echo "127.0.0.1 jenkins.example.com" | sudo tee -a /etc/hosts
+> ```
+>
+> 之后访问 `http://jenkins.example.com:30000`。Windows 宿主机经 WSL mirrored 网络同样可达 localhost，在 Windows 的 hosts（`C:\Windows\System32\drivers\etc\hosts`）中加同一条 `127.0.0.1 jenkins.example.com` 即可。注意 HTTPRoute 按 hostname 匹配：直接访问 `http://localhost:30000` 会返回 404，这是正常表现而非故障。
+
 ### 3.5.5 步骤五：管理员初始化
 
 chart 部署**跳过了安装向导**，管理员密码已经生成在 Secret 中（执行位置：开发机）：
@@ -287,14 +306,17 @@ kubectl -n cicd get secret jenkins \
 
 ### 3.5.6 步骤六：插件源、时区与基础检查
 
-**插件源**（网络受限环境）：Manage Jenkins → Plugins → Advanced settings，将 Update Site 替换为镜像源。国内常用镜像（如清华 TUNA）的地址以镜像站公告为准：
+**插件下载镜像**（网络受限环境）：国内网络直连官方源安装插件极易卡死，原因有两个——`installPlugins` 不带版本号时，插件管理器必须先下载 20 余 MB 的 `plugin-versions.json` 才能解析"最新版本"；且 `update-center.json` 里每个插件的下载地址是绝对路径，`updates.jenkins.io/download` 会按请求随机 302 到全球各地镜像，其中不少在国内不可达。根治方式在 values 中完成（3.6.1 已包含）：通过 `controller.initContainerEnv` 注入 `jenkins-plugin-cli` 官方支持的环境变量 `JENKINS_UC_DOWNLOAD_URL`，只替换插件 jar 的下载基址，元数据仍走官方 `update-center.json`（文件小、可达），再配合钉死的插件版本号，init 容器十几秒即可装完整组插件：
 
-```text
-默认：  https://updates.jenkins.io/update-center.json
-镜像：  https://mirrors.tuna.tsinghua.edu.cn/jenkins/updates/current/update-center.json
+```yaml
+  initContainerEnv:
+    - name: JENKINS_UC_DOWNLOAD_URL
+      value: https://mirrors.tuna.tsinghua.edu.cn/jenkins/plugins
 ```
 
-替换后在 Plugins 页面执行 "Check now" 刷新索引。若集群已按第二章配置了容器镜像加速，Jenkins 主镜像的拉取已覆盖，此处处理的是插件下载。
+> 实测（2026-09，chart 5.9.63）：清华 TUNA 已下架 `jenkins/updates/` 目录（update-center.json 404），**不能**再把 Web UI 的 "Update Site" 或 `JENKINS_UC` 指向 TUNA 这类镜像；但其 `jenkins/plugins/` 插件目录仍完整可用。老教程"改 Update Site 为镜像源"的方案已失效。
+>
+> 运行期在 UI 中在线安装/更新插件仍走官方源，会再次受网络影响。推荐作法是把插件变更统一收敛到 values 的 `installPlugins`，每次以 `helm upgrade` 重新执行 init 安装，既走镜像、又可随 Helm revision 回溯。
 
 **时区验证**：登录后系统时间应为东八区。本章 values 已通过 JVM 参数与 `TZ` 环境变量设置 `Asia/Shanghai`，验证方式：
 
@@ -314,8 +336,8 @@ kubectl -n cicd get pods,svc
 kubectl -n cicd get pvc
 # 预期：jenkins-home-jenkins-0（名称以实际输出为准）STATUS 为 Bound
 
-# 3. Web 可达
-curl -s -o /dev/null -w '%{http_code}\n' http://jenkins.example.com/login
+# 3. Web 可达（kind 实验环境端口为 30000，见 3.5.4 注记）
+curl -s -o /dev/null -w '%{http_code}\n' http://jenkins.example.com:30000/login
 # 预期：200
 
 # 4. 系统日志无持续报错
@@ -329,7 +351,7 @@ kubectl -n cicd logs jenkins-0 --tail=50
 
 ```yaml
 # ============================================================
-# Jenkins Controller Helm 配置（本课程实验环境）
+# Jenkins Controller Helm 配置（本课程实验环境，chart 5.9.63 实测）
 # 安装：helm upgrade --install jenkins jenkins/jenkins -n cicd -f jenkins-values.yaml
 # 字段以所用 chart 版本的 helm show values 输出为准
 # ============================================================
@@ -342,13 +364,22 @@ controller:
   # ---------- 镜像与运行参数 ----------
   image:
     repository: jenkins/jenkins
-    tag: "2.504.2-lts"          # 使用 LTS 版本，实验时替换为当前稳定 LTS
+    tag: "2.568.3-lts"          # 当前 LTS，实验时替换为最新稳定 LTS 即可
   # JVM 参数：堆必须小于 resources.limits.memory，预留 Metaspace 余量
-  jvmArgs: "-Xmx1g -Duser.timezone=Asia/Shanghai"
-  # 容器时区
-  env:
+  # chart 5.9.63 字段名为 javaOpts（追加到 JAVA_OPTS），不要写成 jvmArgs
+  javaOpts: "-Xmx1g -Duser.timezone=Asia/Shanghai"
+  # 容器时区：chart 5.9.63 字段名为 containerEnv，controller.env 会被静默忽略
+  containerEnv:
     - name: TZ
       value: Asia/Shanghai
+
+  # 插件下载镜像（国内网络必配，原理见 3.5.6）：
+  # JENKINS_UC_DOWNLOAD_URL 是 jenkins-plugin-cli 官方支持的环境变量，
+  # 只替换插件 jar 的下载基址；TUNA 已下架 update-center.json，
+  # 故不能用它替换 JENKINS_UC / Web UI 的 Update Site
+  initContainerEnv:
+    - name: JENKINS_UC_DOWNLOAD_URL
+      value: https://mirrors.tuna.tsinghua.edu.cn/jenkins/plugins
 
   # ---------- Service ----------
   serviceType: ClusterIP        # 只经 Gateway API 暴露，不用 LoadBalancer
@@ -363,12 +394,6 @@ controller:
       cpu: "2"
       memory: 4Gi               # -Xmx1g + 余量，避免 OOMKilled
 
-  # ---------- 持久化 ----------
-  persistence:
-    enabled: true
-    size: 20Gi
-    storageClass: ""            # 空字符串 = 使用默认 StorageClass
-
   # ---------- 调度：固定在 cicd 节点池（worker1） ----------
   nodeSelector:
     example.com/pool: cicd
@@ -381,24 +406,30 @@ controller:
 
   # ---------- 插件 ----------
   # 预装课程所需插件；插件的启用与详细配置在后续章节完成
+  # 版本号从当前 LTS 的 update-center.json 提取后钉死（本组对应 Jenkins 2.568.3）：
+  # 1. 安装可复现，可随 Helm revision 回溯
+  # 2. 跳过 plugin-versions.json 的拉取——不带版本号时插件管理器必须先下载
+  #    该 20 余 MB 的大文件解析"最新版本"，国内网络极易卡死（见 3.8 问题三）
   installPlugins:
-    - kubernetes                    # 第六章：动态 Agent
-    - workflow-aggregator           # Pipeline 全家桶
-    - git                           # 代码拉取
-    - gitlab-plugin                 # 第十章：Webhook 触发
-    - credentials-binding           # 第十一章：凭证绑定
-    - configuration-as-code         # 配置即代码
-    - prometheus                    # 第四章：构建指标
-    - opentelemetry                 # 第四章：构建 Trace 关联
-
-  # ---------- 声明式配置入口（后续章节逐步填充）----------
-  # JCasC: configScripts:
-  #   my-config: |
-  #     jenkins:
-  #       ...
+    - kubernetes:4557.ve746270f672f            # 第六章：动态 Agent
+    - workflow-aggregator:608.v67378e9d3db_1   # Pipeline 全家桶
+    - git:5.10.1                                # 代码拉取
+    - gitlab-plugin:1.2154.v00193eff6f9a_      # 第十章：Webhook 触发
+    - credentials-binding:728.v902a_273b_8947   # 第十一章：凭证绑定
+    - configuration-as-code:2121.v86fe99d4b_b_a_b_  # 配置即代码
+    - prometheus:860.v532442b_44e9a_           # 第四章：构建指标
+    - opentelemetry:3.1603.ve3fa_cc8a_b_f5e    # 第四章：构建 Trace 关联
 
   # ---------- 架构原则提示 ----------
   # 本课程在第四章将内置节点 Executor 设为 0，Controller 只编排不构建
+
+# ---------- 持久化 ----------
+# 注意：chart 5.9.63 中 persistence 是顶层字段（老版本位于 controller.persistence），
+# 写错位置会被静默忽略并回退到默认 8Gi
+persistence:
+  enabled: true
+  size: 20Gi
+  # storageClass 留空/不设置 = 使用默认 StorageClass（本集群为 local-path）
 
 serviceAccount:
   create: true
@@ -462,8 +493,8 @@ kubectl -n cicd get gateway cicd-gateway -o wide
 kubectl -n cicd get httproute jenkins -o jsonpath='{.status.parents[0].conditions}'
 # 预期：Gateway 有 ADDRESS；HTTPRoute 条件 Accepted=True、ResolvedRefs=True
 
-# 3. Web 登录页可达
-curl -s -o /dev/null -w '%{http_code}\n' http://jenkins.example.com/login
+# 3. Web 登录页可达（kind 实验环境端口为 30000，见 3.5.4 注记）
+curl -s -o /dev/null -w '%{http_code}\n' http://jenkins.example.com:30000/login
 # 预期：200
 ```
 
@@ -511,11 +542,26 @@ Jenkins 主镜像拉取失败：确认第二章的 containerd 镜像加速配置
 
 ### 问题三：插件安装超时，Pod 长时间不 Ready
 
-chart 在首次启动时安装插件，若插件更新中心不可达会持续重试：
+症状：`kubectl -n cicd logs jenkins-0 -c init` 停在某行 `Downloading xxx` 后长时间无输出，Pod 一直 0/1。国内网络下通常是两个根因叠加：
 
-1. 先临时绕过：将 `installPlugins` 清单暂时精简为空列表安装，事后在 UI 中手动安装。
-2. 根治：按 3.5.6 配置镜像源，或确认集群出网正常。
-3. 网络完全受限的环境可考虑构建预置插件的私有镜像。
+| 根因 | 机制 | 修复 |
+|---|---|---|
+| `installPlugins` 未钉版本 | 插件管理器必须先下载 20 余 MB 的 `plugin-versions.json` 解析"最新版本" | 从 update-center.json 提取版本号钉死在 values（3.6.1） |
+| 插件 URL 随机 302 到海外镜像 | update-center.json 中下载地址是绝对路径，按请求轮询全球镜像，部分国内不可达 | `initContainerEnv` 注入 `JENKINS_UC_DOWNLOAD_URL` 指向国内可达插件目录（3.5.6） |
+
+判断是慢还是卡死：间隔几秒采两次网络计数，无增长即判定卡死：
+
+```bash
+kubectl -n cicd exec jenkins-0 -c init -- cat /proc/net/dev | grep eth0
+```
+
+兜底顺序：
+
+1. 临时绕过：`installPlugins` 精简为空列表先装起来，事后在 UI 手动安装（需出网正常）。
+2. 根治：按 3.5.6 配置下载镜像并钉死插件版本。
+3. 网络完全受限：构建预置插件的私有镜像。
+
+> 注意：TUNA/USTC 的 update-center.json 已下架（404），"把 Update Site 改成镜像源"的老方案已失效，也不要把 `JENKINS_UC` 指向这些地址。
 
 ### 问题四：HTTPRoute 已创建但访问不通
 
@@ -530,6 +576,7 @@ curl -H 'Host: jenkins.example.com' http://<GATEWAY_IP>/login   # 直接用 IP +
 - Gateway 无 ADDRESS：实验环境 LoadBalancer 不可用，检查 Istio 入口网关的暴露方式（第二章）。
 - 用 IP + Host 头可达而域名不通：开发机 DNS/hosts 解析问题。
 - 条件不是 Accepted：核对 parentRefs、hostnames 与 Gateway Listener。
+- **浏览器报 502，而命令行 curl 正常**：开发机开了系统代理（Clash 等）。浏览器把请求交给了代理，代理解析不了 `jenkins.example.com` 这类内部域名，直接返回 502。修复：在代理客户端把 `*.example.com` 加入系统代理绕过列表（或添加 `DOMAIN-SUFFIX,example.com,DIRECT` 规则）。本课程后续章节的 `gitlab.example.com` 等域名同理，建议一次性绕过整个 `example.com`。
 
 ### 问题五：管理员密码不正确
 
