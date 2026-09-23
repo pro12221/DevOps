@@ -588,6 +588,35 @@ curl -H 'Host: jenkins.example.com' http://<GATEWAY_IP>/login   # 直接用 IP +
 
 未生效的时区配置：确认 `jvmArgs` 中的 `-Duser.timezone=Asia/Shanghai` 与 `TZ` 环境变量都已写入（`kubectl -n cicd exec jenkins-0 -- date` 验证），修改后需要重启 Pod。
 
+### 问题七：宿主机/WSL 重启后 Pod 卡在 Unknown 且不自愈
+
+症状：宿主机或 WSL 重启后，`jenkins-0` 长时间显示 `0/2 Unknown`（或伴随 init 容器 CrashLoopBackOff），等十几分钟也不恢复。
+
+根因：kind 集群的节点就是宿主机上的 Docker 容器，宿主机重启等于整个集群"断电"。kubelet 失联超过 40 秒后 API Server 把 Pod 标记为 Unknown；节点回来后 kubelet 会尝试原地恢复，但非正常关机留下的脏状态可能让恢复陷入死循环：
+
+| 脏状态 | 表现 |
+|---|---|
+| 挂死的旧 TCP 连接 | init 容器日志停在 `Downloading xxx`，容器内 Java 进程的连接被宿主机代理（TUN/fake-IP 模式）黑洞化，永不超时 |
+| containerd 僵尸容器记录 | 节点 kubelet 日志反复报 `container is already in removing state`，Pod 反复重建失败 |
+| init 容器 cp 交互失败 | 插件共享卷里残留旧文件，重跑时 `cp` 触发覆盖询问，init 无 stdin 直接 exit 1 |
+
+处置：原地修复不值得逐项排查，直接删 Pod 让 StatefulSet 干净重建（PVC 数据不受影响，用户、插件、配置都在）：
+
+```bash
+# 执行位置：开发机
+kubectl -n cicd delete pod jenkins-0 --wait=false
+# 预期：StatefulSet 重新调度，新 Pod 走完整 init 流程后 2/2 Running，约 2～3 分钟
+```
+
+重建后用 3.7.2 的持久化验证确认数据仍在。若新 init 容器再次因共享卷旧文件失败，进入节点清理后重删：
+
+```bash
+docker exec kind-worker rm -rf /var/jenkins_plugins/*   # 视 values 中共享卷路径而定
+kubectl -n cicd delete pod jenkins-0 --wait=false
+```
+
+> 排查这类"重启后不自愈"问题时，命令行验证务必带 `--noproxy '*'`：WSL 里若设置了 `http_proxy`，发往 Pod IP/ClusterIP 的 curl 会被代理拦截返回 502，制造"服务挂了"的假象（Pod 网络本身不对宿主机暴露，直连超时才是正常现象；入口验证统一走 NodePort/Gateway）。
+
 ## 3.9 安全注意事项
 
 - 管理员密码获取后立即修改默认值，并妥善保存；不把密码写入 values、脚本或文档。
