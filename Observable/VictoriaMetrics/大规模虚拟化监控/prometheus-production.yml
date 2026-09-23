@@ -28,6 +28,12 @@ scrape_configs:
       # instance 标签显示宿主机真实 IP，而不是 IP:9100
       - source_labels: [__address__]
         target_label: instance
+      # file_sd 是裸 IP，补上 node_exporter 端口（此前漏了这步，实际抓的一直是 80 端口，
+      # up 全 0、宿主机资源面板无数据）
+      - source_labels: [__address__]
+        target_label: __address__
+        regex: (.*)
+        replacement: ${1}:9100
       # 打上环境标签，Grafana 按环境区分；scrape_source 标记数据由哪台 vmagent 采集
       - target_label: environment
         replacement: production

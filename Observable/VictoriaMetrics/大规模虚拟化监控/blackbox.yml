@@ -6,7 +6,8 @@
 #   或 systemd 中用 AmbientCapabilities=CAP_NET_RAW
 
 modules:
-  # ICMP 拨测（vmagent job=blackbox-icmp 调用）:
+  # ICMP 拨测（vmagent 6 个分片 job blackbox-icmp-bb1/2/3 调用，relabel 把入库
+  # job 标签统一改回 blackbox-icmp，分片归属由 probe_source=bbN 区分）:
   # 对应 vmagent relabel 中 params.module=icmp，探测目标 IP 是否可 ping，
   # 产出 probe_success / probe_duration_seconds 等指标
   icmp:
@@ -17,7 +18,8 @@ modules:
       # 强制走 IPv4——虚机/宿主机均只有 IPv4 管理网地址
       preferred_ip_protocol: ip4
 
-  # TCP 端口连通性拨测（vmagent job=blackbox-tcp 调用）:
+  # TCP 端口连通性拨测（vmagent 6 个分片 job blackbox-tcp-bb1/2/3 调用，入库
+  # job 标签统一改回 blackbox-tcp）:
   # 对应 vmagent relabel 中 params.module=tcp_connect，
   # Linux 目标探 22(SSH)、Windows 目标探 3389(RDP)
   tcp_connect:

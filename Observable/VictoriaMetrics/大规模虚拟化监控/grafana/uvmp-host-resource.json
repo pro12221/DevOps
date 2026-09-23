@@ -72,7 +72,7 @@
           "color": { "mode": "thresholds" },
           "mappings": [],
           "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
-          "unit": "short",
+          "unit": "none",
           "min": 0
         },
         "overrides": []

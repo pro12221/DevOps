@@ -179,7 +179,9 @@
           ExecStart={{ install_dir }}/vmagent-prod --promscrape.config={{ config_dir }}/prometheus.yml --promscrape.fileSDCheckInterval=5m --remoteWrite.url={{ remote_write_url }} --remoteWrite.tmpDataPath={{ remote_write_tmp_dir }} --httpListenAddr=0.0.0.0:{{ vmagent_port }}
           Restart=on-failure
           RestartSec=5
-          LimitNOFILE=65536
+          # 全量目标 6.6 万+，每个活跃 scraper 持有 1 个 fd；65536 上限曾触发 EMFILE，
+          # 抓取器每 10 分钟周期性全崩（2026-09 踩坑），262144 留 4 倍余量
+          LimitNOFILE=262144
           NoNewPrivileges=true
 
           [Install]

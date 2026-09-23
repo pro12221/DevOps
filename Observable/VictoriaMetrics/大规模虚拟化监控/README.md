@@ -66,8 +66,8 @@ flowchart TB
     GRAFANA -->|"MetricsQL"| VM
 ```
 
-> 图中「blackbox 拨测集群」为优化目标形态：当前单台 blackbox 部署在测试拨测机本机
-> （127.0.0.1:9115），扩容方案见踩坑记录 #1；其余部分为当前已部署形态。
+> 图中「blackbox 拨测集群」已实施：bb1 与测试 vmagent 同机，bb2/bb3 为新增虚机，
+> vmagent 按 hashmod 3 分片把目标分给三台探针（踩坑记录 #1）。
 
 ## 组件部署位置
 
@@ -77,7 +77,7 @@ flowchart TB
 | | vmagent | 8429 | 抓取生产宿主机 exporter，remote_write 到本机 VM |
 | | vmalert | 8880 | 规则引擎：预计算 `uvmp:vm:*` 录制序列，加速 Grafana 查询 |
 | 测试拨测机 10.86.11.94 | vmagent | 8429 | 抓取测试宿主机 exporter + 拨测，remote_write 跨机房到生产 VM |
-| | blackbox_exporter | 9115 | ICMP/TCP 探针（需 CAP_NET_RAW）；当前单机，优化目标为 3 台虚机集群（踩坑 #1） |
+| | blackbox_exporter | 9115 | ICMP/TCP 探针（需 CAP_NET_RAW）；3 台集群 bb1=10.86.11.94（本机）/bb2=10.86.11.74/bb3=10.86.11.75，vmagent hashmod 分片 |
 | 所有 KVM 宿主机 | node_exporter | 9100 | 宿主机自身 CPU/内存/磁盘/网卡 |
 | | libvirt_exporter | 9177 | 从 libvirtd 采每台虚机(domain)的指标，虚机内零 agent |
 
@@ -100,15 +100,15 @@ CMDB API ──(cron 每 10 分钟)──► cmdb-sd.py ──► /data/targets/
 ### 2. 拨测（仅测试拨测机）
 
 ```
-vmagent ──/probe?module=icmp────────► blackbox_exporter ──ICMP──► 虚机/宿主机
-vmagent ──/probe?module=tcp_connect─► blackbox_exporter ──TCP───► 虚机 22(SSH)/3389(RDP)
+vmagent ──/probe?module=icmp────────► blackbox bb1/bb2/bb3 ──ICMP──► 虚机/宿主机（hashmod 3 分片）
+vmagent ──/probe?module=tcp_connect─► blackbox bb1/bb2/bb3 ──TCP───► 虚机 22(SSH)/3389(RDP)
 ```
 
-- vmagent relabel 把目标 IP 塞进 `__param_target`，抓取地址改写为 `127.0.0.1:9115`
-- `environment=testing` keep 规则保证只拨测测试环境目标（防 file_sd 混入其他环境误拨）
+- vmagent relabel 把目标 IP 塞进 `__param_target`，按 hashmod 3 分片把抓取地址改写为对应 blackbox（bb1/bb2/bb3）的 :9115
+- 拨测覆盖全环境目标（file_sd 里 production+testing 混装，不做 keep 过滤，Grafana 按 `environment` 标签区分）
 - Linux 虚机探 22(SSH)，Windows 虚机探 3389(RDP)，由 `os` 标签决定
 - 拨测指标 `probe_success` 经 `uvmp:vm_info` 录制规则注入 CMDB 业务标签
-- 优化目标：blackbox 扩为 3 台虚机集群分摊目标，测试 vmagent 统一采集上报（踩坑记录 #1）
+- blackbox 已扩为 3 台集群分摊目标（hashmod 各扛 1/3，避开踩坑 #1），测试 vmagent 统一采集上报；分片在 vmagent relabel 侧做，cmdb-sd.py / file_sd 不动
 
 ### 3. 资源采集
 
@@ -196,9 +196,15 @@ ansible-playbook -i blackbox.ini deploy-blackbox.yml
 
 **原因**：ICMP/TCP 探测 3 万目标 × 30s 间隔，单机并发探测 + 连接回收把本地资源（临时端口等）耗尽，单台 blackbox 扛不住这个目标量级。
 
-**后续优化**：blackbox_exporter 横向扩到 3 份、分摊到 3 台虚机（每台 ~1 万目标），
-测试环境 vmagent 统一采集三台 blackbox 的探测结果，集中 remote_write 上报到 VM。
-目标拆分可在 cmdb-sd.py 侧按 IP 哈希切三份 file_sd，或 vmagent relabel 分组指向不同 blackbox 实例。
+**已实施（2026-09）**：blackbox_exporter 扩到 3 台虚机（bb1=10.86.11.94 与 vmagent 同机、bb2/bb3 新增），
+prometheus-testing.yml 拆 6 个拨测 job（icmp/tcp × bb1-3），relabel hashmod 3 按 IP 分片各拨 1/3，
+每台 ~1 万目标：TCP 拨测 ~333 连接/s，TIME_WAIT 稳态 ≈ 333×60s ≈ 2 万端口，占默认
+临时端口范围（28232 个）约七成——够用但不宽裕，建议探针机内核开启
+`net.ipv4.tcp_tw_reuse=1` 留出余量；ICMP 走 raw socket 不占用临时端口。
+分片 job 名为 blackbox-icmp/tcp-bb1/2/3，但 relabel 把入库 `job` 标签统一改回
+`blackbox-icmp`/`blackbox-tcp`（分片归属看 `probe_source=bbN`），vmalert 规则与
+Grafana 面板共 33 处 job 精确匹配选择器零改动、历史数据不断裂。
+分片选了 relabel 侧方案：目标清单与探针拓扑解耦，cmdb-sd.py / file_sd 未动，后续扩容只改 yml。
 
 ### 2. libvirt_exporter NOWAIT flag bug 导致采集不到某些指标
 
@@ -257,3 +263,102 @@ data.DomainStatsRecord, data.err = l.ConnectGetAllDomainStats(
 **应对**：把 join 挪到 vmalert recording rules 预计算（`rules/vm-noise-neighbor.yml` 的
 `uvmp-vm-enrich` 组），每 1m 生成带 CMDB 业务标签的 `uvmp:vm:*` 录制序列，
 面板直接查预计算结果，查询从扫全量序列降到点查，秒级返回。
+
+### 4. node-exporter job 漏写端口改写，全量宿主机实际抓的是 80 端口
+
+**现象**：宿主机资源面板（CPU/内存/磁盘/网卡）自上线起一直无数据。目标数量正常——
+`count(up{job="node-exporter"})` = 1908（生产 1837 + 测试 71），但
+`sum(up{job="node-exporter"})` = 0，1908 个目标全部抓取失败。测试机 vmagent journal 刷屏：
+
+```
+cannot scrape target "10.x.x.x" (job="node-exporter"): dial tcp4 10.x.x.x:80: connect: connection refused
+```
+
+（个别宿主机 80 端口恰好跑着 nginx，返回 404，报错形态不同、结果一样。）
+
+**原因**：cmdb-sd.py 生成的 file_sd 目标是**裸 IP**。node-exporter job 的 relabel 只把
+`__address__` 复制成 `instance` 标签，没有补端口——vmagent 对不带端口的目标默认抓
+**80 端口**。libvirt-vm job 一直有 `replacement: ${1}:9177` 改写所以正常，
+node-exporter 恰好漏了 `:9100`。结果：30 天库里 `count(node_cpu_seconds_total)` = 0，
+宿主机指标从未入过库。
+
+**修复**（2026-09）：`prometheus-testing.yml` / `prometheus-production.yml` 的
+node-exporter job 在 instance relabel 之后补上端口改写：
+
+```yaml
+- source_labels: [__address__]
+  target_label: __address__
+  regex: (.*)        # 缺省即 (.*)，${1} = 整个 IP
+  replacement: ${1}:9100
+```
+
+**教训**：
+- file_sd 给裸 IP 时**每个 job 都得自己补端口**：relabel 漏写不会让配置报错，vmagent
+  照常启动、目标照常出现在 `/api/v1/targets`，只是永远连不上 80。
+- 目标数量正常 ≠ 采集正常：验收要看 `sum(up{job=...})`，不是 target 个数；
+  面板无数据先翻 journal 看实际拨的端口，别急着查网络。
+
+### 5. vmagent LimitNOFILE=65536 低于目标数，抓取器周期性全崩
+
+**现象**：Grafana 数据每 10 分钟周期性断流；vmagent journal 报 EMFILE
+（`too many open files`），HTTP accept（tcplistener.go:114）与 file_sd 重载
+（config.go:1133）同时出错，抓取器数量在 66134 ↔ 0 之间反复横跳。
+
+**原因**：vmagent **每个活跃抓取器持有 1 个 fd**，file_sd 全量目标 6.6 万+（66,134）
+超过 vmagent unit 的 `LimitNOFILE=65536`。cmdb-sd 每 10 分钟刷新 targets.json，
+vmagent 检测到变更后重建抓取器池，批量开 fd 撞上限 → EMFILE → 抓取器全崩 →
+下一轮重建再撞，如此循环。
+
+**已实施**（2026-09）：服务器端先手工调大 fd 上限并重启 vmagent
+（`vmagent_scrapers_active` 稳定在 66084，数据恢复）；`deploy-vm.yml` 的 vmagent unit
+同步改为 262144：
+
+```ini
+# 全量目标 6.6 万+，每个活跃 scraper 持有 1 个 fd；65536 上限曾触发 EMFILE，
+# 抓取器每 10 分钟周期性全崩（2026-09 踩坑），262144 留 4 倍余量
+LimitNOFILE=262144
+```
+
+victoria-metrics / vmalert unit 保持 65536 不动（各自连接数远低于此）。
+
+**教训**：
+- vmagent 的 fd 需求 ≈ 活跃目标数，LimitNOFILE 按「目标数 × 4」留余量；
+  目标从 3 万扩到 6.6 万时，unit 参数要跟着盘点，别等 EMFILE 才想起来。
+- EMFILE 的症状是「数据断流 + HTTP API 间歇报错 + file_sd 跳过重载」的组合，
+  不只影响抓取本身，排障时别只盯抓取链路。
+
+### 6. blackbox_exporter icmp.go:178 ERROR 刷屏（内核禁用非特权 ping socket）
+
+**现象**：三台探针机 blackbox_exporter journal 每秒数百条刷
+`level=ERROR ... icmp.go:178 "Unable to do unprivileged listen on socket, will attempt privileged"
+err="socket: permission denied"`，但拨测全部正常（`sum(up{job="blackbox-icmp"})` ≈ 3.3 万全 1）。
+
+**原因**：blackbox_exporter 的 ICMP 探测先走**非特权 ping socket**（udp4，内核代发
+Echo），该路径受 `net.ipv4.ping_group_range` 门控；内核默认 `"1 0"` = 所有 group
+全禁，于是每条探测先吃一次 EPERM、再回退特权 raw socket。unit 已用
+`AmbientCapabilities=CAP_NET_RAW` 授过权，raw 路径走得通、探测不失败——纯粹是
+日志噪音，但真实故障会被淹没。
+
+**修复**（2026-09）：`deploy-blackbox.yml` 新增 sysctl 任务（跟在 tcp_tw_reuse 之后）：
+
+```yaml
+- name: 放开非特权 ICMP ping socket（消除 icmp.go:178 报错刷屏）
+  ansible.builtin.sysctl:
+    name: net.ipv4.ping_group_range
+    value: "0 2147483647"
+    sysctl_set: true
+    reload: true
+```
+
+放开后非特权路径直接成功，日志恢复干净。
+
+**教训**：
+- ERROR 级日志 ≠ 探测失败：`up=1` 时先分辨是「回退路径噪音」还是真故障，刷屏会埋掉真问题。
+- 非特权 ping socket 按 gid 门控（ping_group_range），特权 raw socket 按 capability
+  门控（CAP_NET_RAW），blackbox_exporter 两条都试——想日志干净就得让第一条也通。
+
+### 待排查：生产 libvirt-vm 1837 个目标全部 up=0
+
+生产 vmagent（10.69.81.68）抓 libvirt-vm 1837/1837 全部失败，测试环境 71/71 正常。
+node-exporter 端口修复后需确认生产宿主机 `:9177` 是否可达 / 是否部署了
+libvirt_exporter（本环境 22 端口不通无法 SSH 登录确认，待人工排查）。

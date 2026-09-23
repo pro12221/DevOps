@@ -5,8 +5,9 @@
 #   ansible-playbook -i blackbox.ini deploy-blackbox.yml
 #
 # 说明:
-#   blackbox_exporter 装在拨测机上（vmagent 同机），监听 :9115，
-#   vmagent 通过 127.0.0.1:9115/probe?module=...&target=... 拨测 30000 台虚机。
+#   blackbox_exporter 集群 3 台（blackbox_probe 组：bb1 与 vmagent 同机、bb2/bb3 新增），
+#   各自监听 :9115，vmagent 6 个分片 job（blackbox-icmp/tcp-bb1/2/3）按 hashmod
+#   分片分别调用各台 /probe?module=...&target=...，合计拨测全环境 ~3 万目标。
 #   icmp 需要 CAP_NET_RAW（unit 里已用 AmbientCapabilities 授予）。
 
 - name: 部署 blackbox_exporter (测试拨测机)
@@ -69,6 +70,25 @@
         enabled: true
         state: started
         daemon_reload: true
+
+    # TCP 拨测 ~333 连接/s/台，TIME_WAIT 稳态 ~2 万端口占默认范围（28232）七成；
+    # tcp_tw_reuse 允许复用 TIME_WAIT 端口发起出站连接，给探针留出余量（踩坑 #1）
+    - name: 开启 tcp_tw_reuse（TIME_WAIT 端口复用）
+      ansible.builtin.sysctl:
+        name: net.ipv4.tcp_tw_reuse
+        value: "1"
+        sysctl_set: true
+        reload: true
+
+    # blackbox 探 ICMP 先走非特权 ping socket（udp4），内核默认 ping_group_range="1 0"
+    # 全员禁用，每条探测先报一次 EPERM 再回退特权 raw socket（icmp.go:178 ERROR 刷屏）；
+    # 放开后非特权路径直接成功，日志干净
+    - name: 放开非特权 ICMP ping socket（消除 icmp.go:178 报错刷屏）
+      ansible.builtin.sysctl:
+        name: net.ipv4.ping_group_range
+        value: "0 2147483647"
+        sysctl_set: true
+        reload: true
 
     - name: 验证 metrics 端点
       ansible.builtin.uri:

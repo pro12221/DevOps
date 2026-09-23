@@ -5,16 +5,21 @@
 #       分发到目标机的 /etc/vmagent/prometheus.yml。
 #
 # 与生产配置的区别:
-#   1. 多了 blackbox-icmp / blackbox-tcp 两个拨测 job（ICP/TCP 拨测由测试机承担）
-#   2. 两个 blackbox job 都用 keep 规则只保留 environment=testing 的目标，
-#      避免 file_sd 文件里混入其他环境的目标时误拨测
+#   1. 多了 6 个拨测 job（blackbox-icmp/tcp 各拆 bb1/bb2/bb3 三分片，ICMP/TCP 拨测全部由测试机承担）；
+#      各分片 job 经 relabel 把入库 job 标签统一改回 blackbox-icmp / blackbox-tcp（分片归属看
+#      probe_source=bbN），下游 vmalert 规则与 Grafana 面板按 job= 精确匹配的选择器零改动
+#   2. 拨测全环境目标，3 台 blackbox 哈希分片各扛 1/3，避开踩坑 #1 单机端口耗尽；
+#      分片在 vmagent relabel 侧做（hashmod），cmdb-sd.py / file_sd 文件不用改
 #   3. remote_write 指向生产存储 10.69.81.68:8428（由 deploy-vm.yml 的 remote_write_url 渲染）
 #
 # file_sd 文件由 cmdb-sd.py（cron 每 10 分钟）生成到 /data/targets/:
-#   blackbox-icmp.json   → 拨测目标（测试虚机+宿主机全量，含 environment/os 等标签）
+#   blackbox-icmp.json   → 拨测目标（全环境虚机+宿主机，含 environment/os 等标签）
 #   blackbox-tcp.json    → TCP 拨测目标
 #   testing-node.json    → 测试宿主机 node_exporter 列表（:9100）
 #   testing-libvirt.json → 测试宿主机 libvirt_exporter 列表（:9177）
+#
+# 拨测集群: bb1=10.86.11.94（与 vmagent 同机）、bb2=10.86.11.74、bb3=10.86.11.75
+# （bb2/bb3 为新建虚机）
 
 global:
   # 全局默认抓取间隔/超时，与生产配置保持一致
@@ -22,68 +27,211 @@ global:
   scrape_timeout: 10s
 
 scrape_configs:
-  # ============ ICMP 拨测（ping，测试虚机+宿主机） ============
+  # ============ ICMP 拨测（ping，全环境虚机+宿主机，3 台 blackbox 哈希分片） ============
   # blackbox_exporter 以 /probe?target=<IP>&module=icmp 方式工作:
-  # vmagent 通过 relabel 把目标 IP 塞进 __param_target，再把实际抓取地址改写为黑盒自身
-  - job_name: blackbox-icmp
+  # vmagent 通过 relabel 把目标 IP 塞入 __param_target，再把实际抓取地址改写为对应分片的 blackbox。
+  # 分片规则：对目标 IP hashmod 3，bb1/bb2/bb3 各拨 shard 0/1/2；
+  # 目标→探针是固定映射（某台探针挂了能精确知道缺哪段目标的数据），
+  # file_sd 仍是全量单文件，6 个 job 共读，cmdb-sd.py 无需感知探针数量。
+  # ============ ICMP bb1（shard 0） ============
+  - job_name: blackbox-icmp-bb1
     metrics_path: /probe
     params:
       module: [icmp]
     file_sd_configs:
       - files: [/data/targets/blackbox-icmp.json]
     relabel_configs:
-      # 只保留测试环境目标（cmdb-sd.py 已按环境打 environment 标签）
-      - source_labels: [environment]
-        regex: testing
+      # instance 显示目标真实 IP（先于 hashmod，保证哈希对象是裸 IP）
+      - source_labels: [__address__]
+        target_label: instance
+      # 对目标 IP 哈希取模 3，结果写入临时标签 __tmp_shard（__ 开头标签不入库）
+      - source_labels: [instance]
+        action: hashmod
+        modulus: 3
+        target_label: __tmp_shard
+      # 只保留 shard=0 的目标（bb2/bb3 的 job 用 regex 1、2）
+      - source_labels: [__tmp_shard]
+        regex: "0"
         action: keep
       # 目标 IP 写入 __param_target，让 blackbox 知道 ping 谁
-      - source_labels: [__address__]
+      - source_labels: [instance]
         target_label: __param_target
-      # instance 显示目标真实 IP，而非黑盒地址
-      - source_labels: [__param_target]
-        target_label: instance
-      # 实际抓取地址固定为黑盒自身 :9115（blackbox_exporter 与 vmagent 同机）
+      # 实际抓取地址改写为 bb1 的 blackbox
       - target_label: __address__
-        replacement: 127.0.0.1:9115
-      # 拨测来源标记，区分是哪台拨测机发的探测
+        replacement: 10.86.11.94:9115
+      # job 标签统一改回 blackbox-icmp：vmalert 的 uvmp:vm_info 锚点与 Grafana 拨测面板共 33 处
+      # job="blackbox-icmp" 精确匹配选择器，job 改名会全部断查；分片归属由 probe_source=bbN 承担
+      - target_label: job
+        replacement: blackbox-icmp
+      # 拨测来源标记，区分是哪台探针发的探测（排查探针故障按此过滤）
       - target_label: probe_source
-        replacement: testing
+        replacement: bb1
       # 数据来源标记
       - target_label: scrape_source
         replacement: testing
 
-  # ============ TCP 拨测（端口连通性） ============
-  # 根据 os 标签决定探测端口: Linux 探 22(SSH)，Windows 探 3389(RDP)
-  - job_name: blackbox-tcp
+  # ============ ICMP bb2（shard 1） ============
+  # relabel 链与 bb1 相同，仅 shard regex / 探针地址 / probe_source 不同
+  - job_name: blackbox-icmp-bb2
+    metrics_path: /probe
+    params:
+      module: [icmp]
+    file_sd_configs:
+      - files: [/data/targets/blackbox-icmp.json]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+      - source_labels: [instance]
+        action: hashmod
+        modulus: 3
+        target_label: __tmp_shard
+      - source_labels: [__tmp_shard]
+        regex: "1"
+        action: keep
+      - source_labels: [instance]
+        target_label: __param_target
+      - target_label: __address__
+        replacement: 10.86.11.74:9115
+      - target_label: job
+        replacement: blackbox-icmp
+      - target_label: probe_source
+        replacement: bb2
+      - target_label: scrape_source
+        replacement: testing
+
+  # ============ ICMP bb3（shard 2） ============
+  - job_name: blackbox-icmp-bb3
+    metrics_path: /probe
+    params:
+      module: [icmp]
+    file_sd_configs:
+      - files: [/data/targets/blackbox-icmp.json]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+      - source_labels: [instance]
+        action: hashmod
+        modulus: 3
+        target_label: __tmp_shard
+      - source_labels: [__tmp_shard]
+        regex: "2"
+        action: keep
+      - source_labels: [instance]
+        target_label: __param_target
+      - target_label: __address__
+        replacement: 10.86.11.75:9115
+      - target_label: job
+        replacement: blackbox-icmp
+      - target_label: probe_source
+        replacement: bb3
+      - target_label: scrape_source
+        replacement: testing
+
+  # ============ TCP 拨测（端口连通性，3 台 blackbox 哈希分片） ============
+  # 根据 os 标签决定探测端口: Linux 探 22(SSH)，Windows 探 3389(RDP)。
+  # 分片规则与 ICMP 完全一致（同一目标两种协议落在同一台探针，便于按探针聚合排障）。
+  # ============ TCP bb1（shard 0） ============
+  - job_name: blackbox-tcp-bb1
     metrics_path: /probe
     params:
       module: [tcp_connect]
     file_sd_configs:
       - files: [/data/targets/blackbox-tcp.json]
     relabel_configs:
-      # 只保留测试环境目标
-      - source_labels: [environment]
-        regex: testing
-        action: keep
-      # instance 显示目标真实 IP
+      # instance 显示目标真实 IP（先于 hashmod 与端口改写）
       - source_labels: [__address__]
         target_label: instance
+      # 哈希分片（同 ICMP）
+      - source_labels: [instance]
+        action: hashmod
+        modulus: 3
+        target_label: __tmp_shard
+      - source_labels: [__tmp_shard]
+        regex: "0"
+        action: keep
       # 默认探测端口 22(SSH)
-      - source_labels: [__address__]
+      - source_labels: [instance]
         target_label: __param_target
         replacement: ${1}:22
       # Windows 虚机改探 3389(RDP)，后写的 relabel 覆盖前写
-      - source_labels: [__address__, os]
+      - source_labels: [instance, os]
         regex: (.*);windows
         target_label: __param_target
         replacement: ${1}:3389
-      # 实际抓取地址固定为黑盒自身 :9115
+      # 实际抓取地址改写为 bb1 的 blackbox
       - target_label: __address__
-        replacement: 127.0.0.1:9115
-      # 拨测来源标记
+        replacement: 10.86.11.94:9115
+      # job 标签统一改回 blackbox-tcp（理由同 ICMP bb1）
+      - target_label: job
+        replacement: blackbox-tcp
       - target_label: probe_source
+        replacement: bb1
+      - target_label: scrape_source
         replacement: testing
-      # 数据来源标记
+
+  # ============ TCP bb2（shard 1） ============
+  - job_name: blackbox-tcp-bb2
+    metrics_path: /probe
+    params:
+      module: [tcp_connect]
+    file_sd_configs:
+      - files: [/data/targets/blackbox-tcp.json]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+      - source_labels: [instance]
+        action: hashmod
+        modulus: 3
+        target_label: __tmp_shard
+      - source_labels: [__tmp_shard]
+        regex: "1"
+        action: keep
+      - source_labels: [instance]
+        target_label: __param_target
+        replacement: ${1}:22
+      - source_labels: [instance, os]
+        regex: (.*);windows
+        target_label: __param_target
+        replacement: ${1}:3389
+      - target_label: __address__
+        replacement: 10.86.11.74:9115
+      - target_label: job
+        replacement: blackbox-tcp
+      - target_label: probe_source
+        replacement: bb2
+      - target_label: scrape_source
+        replacement: testing
+
+  # ============ TCP bb3（shard 2） ============
+  - job_name: blackbox-tcp-bb3
+    metrics_path: /probe
+    params:
+      module: [tcp_connect]
+    file_sd_configs:
+      - files: [/data/targets/blackbox-tcp.json]
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+      - source_labels: [instance]
+        action: hashmod
+        modulus: 3
+        target_label: __tmp_shard
+      - source_labels: [__tmp_shard]
+        regex: "2"
+        action: keep
+      - source_labels: [instance]
+        target_label: __param_target
+        replacement: ${1}:22
+      - source_labels: [instance, os]
+        regex: (.*);windows
+        target_label: __param_target
+        replacement: ${1}:3389
+      - target_label: __address__
+        replacement: 10.86.11.75:9115
+      - target_label: job
+        replacement: blackbox-tcp
+      - target_label: probe_source
+        replacement: bb3
       - target_label: scrape_source
         replacement: testing
 
@@ -95,6 +243,11 @@ scrape_configs:
     relabel_configs:
       - source_labels: [__address__]
         target_label: instance
+      # file_sd 是裸 IP，补上 node_exporter 端口（此前漏了这步，实际抓的一直是 80 端口，
+      # up 全 0、宿主机资源面板无数据；regex 缺省 (.*)，${1} 即整个 IP）
+      - source_labels: [__address__]
+        target_label: __address__
+        replacement: ${1}:9100
       # 打上环境标签，Grafana 按环境区分；scrape_source 标记数据由哪台 vmagent 采集
       - target_label: environment
         replacement: testing
@@ -120,9 +273,9 @@ scrape_configs:
       - target_label: scrape_source
         replacement: testing
 
-  # ============ 组件自监控（测试拨测机本机组件） ============
-  # 测试机 vmagent 顺带抓取本机各组件自身指标，统一入库供自监控面板使用；
-  # 测试机不部署 VM 存储/vmalert，故只监控本机实际存在的四个组件
+  # ============ 组件自监控（vmagent + blackbox 探针） ============
+  # 测试机 vmagent 顺带抓取各组件自身指标，统一入库供自监控面板使用；
+  # 覆盖本机 vmagent、bb1 本机 blackbox、bb2/bb3 两台远端 blackbox
   - job_name: self-monitoring
     static_configs:
       # vmagent 自身指标（队列深度、抓取错误数等）
@@ -132,24 +285,18 @@ scrape_configs:
           component: vmagent
           environment: testing
           scrape_source: testing
-      # blackbox_exporter 自身指标（探针并发、失败数等）
+      # blackbox_exporter 自身指标（探针并发、失败数等）；bb1 与 vmagent 同机走 127.0.0.1
       - targets:
           - 127.0.0.1:9115
         labels:
           component: blackbox-exporter
           environment: testing
           scrape_source: testing
-      # 本机 node_exporter 自身指标
+      # bb2/bb3 远端 blackbox_exporter 自身指标
       - targets:
-          - 127.0.0.1:9100
+          - 10.86.11.74:9115
+          - 10.86.11.75:9115
         labels:
-          component: node-exporter
-          environment: testing
-          scrape_source: testing
-      # 本机 libvirt_exporter 自身指标
-      - targets:
-          - 127.0.0.1:9177
-        labels:
-          component: libvirt-exporter
+          component: blackbox-exporter
           environment: testing
           scrape_source: testing
