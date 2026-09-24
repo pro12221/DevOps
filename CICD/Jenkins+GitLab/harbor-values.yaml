@@ -1,0 +1,35 @@
+expose:
+  type: ingress
+  tls:
+    enabled: false          # 裸机环境暂无证书，先走 http（后续配 TLS 再开）
+  ingress:
+    className: nginx
+    hosts:
+      core: harbor.devops.local
+      notary: notary.harbor.local
+externalURL: http://harbor.devops.local:32037
+persistence:
+  enabled: true
+  imageChartStorage:
+    type: filesystem
+    filesystem:
+      rootDirectory: /storage
+  persistentVolumeClaim:
+    registry:
+      storageClass: "local-path"
+      size: 100Gi
+      accessModes: ["ReadWriteOnce"]
+    database:
+      storageClass: "local-path"
+      size: 10Gi
+    redis:
+      storageClass: "local-path"
+      size: 5Gi
+    trivy:
+      storageClass: "local-path"
+      size: 10Gi
+# w1 是无污点 worker，不写 nodeSelector 自然落位；
+# 但 local PV 绑节点，稳妥起见显式钉死（cluster-plan 5.1：Harbor → devops-w1）
+nodeSelector:
+  kubernetes.io/hostname: devops-w1
+harborAdminPassword: "Harbor12345"   # 实验环境默认，后续可改

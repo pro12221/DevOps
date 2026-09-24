@@ -2,6 +2,7 @@
 
 > 生成日期：2026-09-24
 > 状态：基础设施已部署完成（kubeadm 集群 ×2、Gateway API + Istio 已上线并验证）
+> 架构调整（2026-09-24）：存储先用 local PV（暂不上 Longhorn）；暂不引入 ArgoCD，由 Jenkins 直接发布到 prod
 > 目录：`/mnt/d/wsl/DevOps/Jenkins+GitLab/`
 
 ---
@@ -10,7 +11,7 @@
 
 在 UCloud 香港（hk-02 可用区）同一 VPC 内构建两套相互独立、内网互通的 Kubernetes 集群：
 
-- **devops 集群**（工具集群）：承载 CI/CD 全套工具链 —— GitLab（代码仓库）、Jenkins（构建）、Harbor（镜像仓库）、ArgoCD（GitOps 发布）
+- **devops 集群**（工具集群）：承载 CI/CD 全套工具链 —— GitLab（代码仓库）、Jenkins（构建 + 发布）、Harbor（镜像仓库）
 - **prod 集群**（发布集群）：承载业务应用，通过 Gateway API + Istio 对外提供服务
 
 ```mermaid
@@ -22,13 +23,13 @@ flowchart TB
         subgraph devops["devops 集群 · CI/CD 工具链（2 节点）"]
             dm1["devops-m1 · master<br/>内网 10.7.6.245"]
             dw1["devops-w1 · worker<br/>内网 10.7.89.39"]
-            tools["GitLab · Jenkins · Harbor · ArgoCD<br/>Longhorn 存储（/data 500G）"]
+            tools["GitLab · Jenkins · Harbor<br/>local PV 存储（/data 500G）"]
         end
         subgraph prod["prod 集群 · 业务发布（3 节点）"]
             pm1["prod-m1 · master<br/>内网 10.7.94.38"]
             pw1["prod-w1 · worker<br/>内网 10.7.86.208"]
             pw2["prod-w2 · worker<br/>内网 10.7.68.234"]
-            apps["业务应用 + Istio sidecar<br/>Gateway API 入口（NodePort 30482）<br/>Longhorn 存储（/data 500G）"]
+            apps["业务应用 + Istio sidecar<br/>Gateway API 入口（NodePort 30482）<br/>local PV 存储（/data 500G）"]
         end
         devops <-->|"集群间互通走内网 10.7.x.x（不耗 EIP 带宽）"| prod
     end
@@ -38,9 +39,11 @@ flowchart TB
 ```
 
 **网络原则：**
-- 所有集群间通信（GitLab→Jenkins、Jenkins→Harbor、Harbor→prod 拉镜像、Jenkins/ArgoCD→prod API）全部走 **10.7.x.x 内网**，不消耗 EIP 带宽
+- 所有集群间通信（GitLab→Jenkins、Jenkins→Harbor、Harbor→prod 拉镜像、Jenkins→prod API）全部走 **10.7.x.x 内网**，不消耗 EIP 带宽
 - EIP 仅用于：开发人员 SSH/访问 GitLab-Jenkins-Harbor Web 界面（devops 集群）、业务对外服务（prod 集群）
-- UCloud 外网防火墙（firewall-4525qkme：TCP 22/80/443 + ICMP）不过滤 VPC 内网流量，节点间 K8s 端口（6443/2379-2380/10250/179 BGP/8472 VXLAN）无需额外规则
+- UCloud 外网防火墙（**firewall-xb10rdnu `k8s-clusters-hk`**：TCP 1-65535 + UDP 1-65535 + ICMP + GRE 全放通，0.0.0.0/0，绑定全部 5 台 UHost）不过滤 VPC 内网流量，节点间 K8s 端口（6443/2379-2380/10250/179 BGP/8472 VXLAN）无需额外规则
+- 全放通是临时便利措施：6443 等管理端口目前也暴露公网（安全风险），学习/实验环境可接受，生产化时应收紧为最小端口集（如 22/80/443/30482）
+- 30482 是 prod 集群 Gateway API 对外入口（NodePort，公网可达，已验证三个 EIP 均 HTTP 200）；原默认防火墙 firewall-4525qkme（22/3389/80/443）不可修改规则，故新建防火墙替换绑定
 
 ---
 
@@ -103,33 +106,31 @@ flowchart TB
 
 ### 5.1 组件与存储
 
-| 组件 | 部署方式 | 端口/暴露 | 存储 |
-|---|---|---|---|
-| GitLab CE | Helm/Omnibus | ingress-nginx NodePort，Host gitlab.devops.local | Longhorn PVC（代码+仓库+CI 缓存） |
-| Jenkins LTS | Helm | ingress-nginx NodePort，Host jenkins.devops.local | Longhorn PVC（工作空间+缓存） |
-| Harbor | Helm | ingress-nginx NodePort，Host harbor.devops.local | Longhorn PVC（镜像存储） |
-| ArgoCD | Helm/YAML | NodePort，Host argocd.devops.local | 内置 |
+| 组件 | 部署方式 | 端口/暴露 | 存储 | 固定节点 |
+|---|---|---|---|---|
+| GitLab CE | Helm/Omnibus | ingress-nginx NodePort，Host gitlab.devops.local | local PV（代码+仓库+CI 缓存） | devops-m1 |
+| Jenkins LTS | Helm | ingress-nginx NodePort，Host jenkins.devops.local | local PV（工作空间+缓存） | devops-m1 |
+| Harbor | Helm | ingress-nginx NodePort，Host harbor.devops.local | local PV（镜像存储） | devops-w1 |
 
-devops 集群 2 节点各挂 500G /data → Longhorn 双副本分布式存储，为上述有状态服务提供 PVC。
+devops 集群 2 节点各挂 500G /data → **local PV**：直接用节点本地盘（手工创建 local PV，或装 local-path-provisioner 动态供给）。local PV 与节点绑定，上述有状态服务必须用 nodeSelector 固定节点（见上表，可按实际负载调整）；无副本、无迁移能力，节点故障需等节点恢复，当前规模可接受，后续需要高可用再换 Longhorn。
 
-### 5.2 发布流水线（目标链路）
+### 5.2 发布流水线（Jenkins 直发，当前方案）
 
 ```mermaid
 flowchart LR
     dev["开发者 git push"] --> gl["GitLab<br/>Webhook 触发"]
     gl --> jk["Jenkins Pipeline"]
 
-    subgraph stages["流水线四阶段"]
+    subgraph stages["流水线三阶段"]
         direction TB
         s1["阶段1 构建<br/>mvn/npm build → docker build"]
         s2["阶段2 推送<br/>docker push → Harbor<br/>10.7.6.245:端口/project/app:tag"]
-        s3["阶段3 声明<br/>更新 Git 中 K8s YAML / Helm values 的镜像 tag"]
-        s4["阶段4 发布<br/>ArgoCD 监听 Git 变更"]
-        s1 --> s2 --> s3 --> s4
+        s3["阶段3 发布<br/>Git 中的 K8s YAML / Helm values<br/>kubectl apply / helm upgrade"]
+        s1 --> s2 --> s3
     end
 
     jk --> s1
-    s4 -->|"GitOps 自动同步"| prod["prod 集群"]
+    s3 -->|"专用 kubeconfig · 内网 10.7.94.38:6443"| prod["prod 集群"]
     prod --> pull["新 Pod：containerd 从 Harbor 拉镜像（走内网）"]
     pull --> inj["Istio sidecar 注入"]
     inj --> gw["Gateway API 暴露服务"]
@@ -137,29 +138,40 @@ flowchart LR
 
 ### 5.3 集群间授权（安全要点）
 
-- **禁止**把 prod 的 admin.conf 分发给 Jenkins/ArgoCD
-- 在 prod 集群创建专用 ServiceAccount + Role（仅可操作业务 ns），生成 kubeconfig 给 Jenkins/ArgoCD，通过内网 `https://10.7.94.38:6443` 访问
+- **禁止**把 prod 的 admin.conf 分发给 Jenkins
+- 在 prod 集群创建专用 ServiceAccount + Role（仅可操作业务 ns），生成 kubeconfig 给 Jenkins，通过内网 `https://10.7.94.38:6443` 访问
 - Harbor 对 prod 配置 pull secret；对 Jenkins 配置 push 凭据
 - 后续可加：prod 的 containerd 配置 Harbor 为 mirror/直连 endpoint
 
-### 5.4 日常多集群管理
+### 5.4 日常多集群管理（本机免密直连，已配置）
+
+**方案：SSH 隧道 + launchd 常驻。** 公网防火墙只放 22/80/443，6443 不对公网暴露（安全原则）；apiserver 证书 SAN 只含内网 IP。因此本机 kubectl 走「launchd 常驻 SSH 隧道 → master 内网 6443」，kubeconfig 用 `tls-server-name` 匹配证书，重启后自动恢复，无需手工操作。
 
 ```bash
-# 本机合并双集群 kubeconfig（context: devops / prod）
-scp root@123.58.219.112:/etc/kubernetes/admin.conf ~/.kube/devops.conf
-scp root@165.154.42.140:/etc/kubernetes/admin.conf ~/.kube/prod.conf
-export KUBECONFIG=~/.kube/devops.conf:~/.kube/prod.conf
-# 分别 rename-context 后 flatten 到 ~/.kube/config
+# 隧道（launchd 自动维持，开机自启）：
+#   本地 127.0.0.1:16443 → devops-m1 内网 10.7.6.245:6443
+#   本地 127.0.0.1:26443 → prod-m1  内网 10.7.94.38:6443
+# plist: ~/Library/LaunchAgents/com.user.sshtunnels.k8s.plist（日志 /tmp/ssh-tunnels-k8s.log）
 
-kubectl config use-context devops && kubectl get nodes
-kubectl config use-context prod    && kubectl get nodes
+# 本地 kubeconfig（~/.kube/config，context: devops / prod）
+#   server 指向 127.0.0.1 隧道端口，cluster 加 tls-server-name=<master 内网 IP> 过证书校验
+#   文件：~/.kube/devops.conf、~/.kube/prod.conf（合并 flatten 到 ~/.kube/config）
+# 注意：两份配置的 cluster/user/context 必须唯一命名（devops/prod），否则 flatten 时同名互相覆盖
+
+kubectl config use-context devops && kubectl get nodes   # 2 节点
+kubectl config use-context prod    && kubectl get nodes   # 3 节点
+
+# 隧道排障
+launchctl list | grep sshtunnels        # 应有 PID
+lsof -iTCP:16443 -iTCP:26443 -sTCP:LISTEN
 ```
 
 > admin.conf 为 cluster-admin 权限，仅限管理员本机保存，绝不进 CI、不进 Git。
 
 方案取舍：
 - **kubectl context**：日常运维（已具备）
-- **ArgoCD**：发布主链路（GitOps，审计友好）——推荐
+- **Jenkins 直发（当前方案）**：流水线末段直接 kubectl/helm apply 到 prod，链路最短、见效快；K8s YAML / Helm values 仍在 Git 中维护，作为部署事实来源
+- **ArgoCD（后续可选）**：需要 GitOps 审计、漂移自愈、自动回滚时再引入；届时 Jenkins 只改 Git 里的镜像 tag，切换成本低
 - **Rancher**：可选 UI 统一管理，当前 2+3 节点规模非必需
 - Karmada/OCM：跨集群调度，当前规模不需要
 
@@ -170,10 +182,11 @@ kubectl config use-context prod    && kubectl get nodes
 | 事项 | 说明 | 状态 |
 |---|---|---|
 | 单 master 风险 | 两集群均为 1 master，挂了控制面不可用（数据面仍运行） | 可接受；后续可加 master |
-| prod 对外入口 | 目前 NodePort 30482（HTTP, Host 路由）；HTTPS/TLS 未配 | Task #6+ 配证书 |
+| prod 对外入口 | NodePort 30482 已在公网防火墙放通（HTTP, Host 路由）；HTTPS/TLS 未配 | Task #6+ 配证书 |
 | EIP 带宽 5M | 用户业务流量大时需升级 | 观察 |
-| Longhorn | devops/prod 均计划部署，/data 500G ×2/×3 | Task #6 |
-| Harbor 高可用 | 单实例 + Longhorn PVC | 规模小可接受 |
+| 存储高可用 | 当前用 local PV（节点本地 /data），节点故障数据不迁移、Pod 不能漂移 | 后续需要高可用时上 Longhorn |
+| Harbor 高可用 | 单实例 + local PV，固定 devops-w1 | 规模小可接受 |
+| 发布方式 | Jenkins 直连 prod 发布，暂无 GitOps 审计/漂移自愈 | 后续可引入 ArgoCD |
 | 监控 | 未部署 | 后续 kube-prometheus-stack |
 | 备份 | GitLab/Harbor 数据、集群 etcd | 后续 velero |
 

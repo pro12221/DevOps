@@ -1,0 +1,160 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gitlab
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gitlab-root-password
+  namespace: gitlab
+type: Opaque
+stringData:
+  # 注意：不能含 "gitlab" 等常用词，密码强度校验会拒绝
+  password: "Dev0ps#2026"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: gitlab-data
+  namespace: gitlab
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 100Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitlab
+  namespace: gitlab
+spec:
+  selector:
+    app: gitlab
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+    - name: ssh
+      port: 22
+      targetPort: 22
+      nodePort: 30222
+  type: NodePort
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: gitlab
+  namespace: gitlab
+spec:
+  serviceName: gitlab
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gitlab
+  template:
+    metadata:
+      labels:
+        app: gitlab
+    spec:
+      # local PV 绑节点 → 钉死 devops-m1（cluster-plan 5.1），与 Jenkins 同节点共享 /data
+      nodeSelector:
+        kubernetes.io/hostname: devops-m1
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      initContainers:
+        # 只 chown /etc/gitlab（emptyDir，git uid=998）。
+        # 绝不能 chown /var/opt/gitlab：Omnibus 各服务用独立 uid
+        # （git=998 / gitlab-redis=997 / gitlab-psql=996 / gitlab-www=999），
+        # 整树 chown 成 git 后 pod 重建时 postgres/redis 数据目录属主被打爆
+        # （PG_VERSION 0600 → Permission denied，服务起不来，ingress 502）
+        - name: fix-permissions
+          image: busybox
+          command: ["sh", "-c", "chown -R 998:998 /etc/gitlab 2>/dev/null || true"]
+          volumeMounts:
+            - name: config
+              mountPath: /etc/gitlab
+      containers:
+        - name: gitlab
+          image: gitlab/gitlab-ce:17.9.1-ce.0
+          env:
+            - name: GITLAB_OMNIBUS_CONFIG
+              value: |
+                # external_url 带 :32037（ingress-nginx NodePort）clone/回调 URL 才正确；
+                # 但 Omnibus 默认让 nginx 监听 external_url 的端口，必须钉回 80
+                external_url 'http://gitlab.devops.local:32037'
+                nginx['listen_port'] = 80
+                nginx['listen_https'] = false
+                gitlab_rails['gitlab_ssh_host'] = '123.58.219.112'
+                gitlab_rails['gitlab_shell_ssh_port'] = 30222
+                # 压缩内存占用：裸机实验环境 16C/32G 与 Jenkins 共存
+                puma['worker_processes'] = 2
+                sidekiq['concurrency'] = 10
+                prometheus_monitoring['enable'] = false
+                # health 端点 IP 白名单：默认只放行 127.0.0.0/8，kubelet 探针来自节点 IP
+                # → 不加则 /-/readiness|liveness 对节点 404，readiness 永不过，ingress 一直 503
+                gitlab_rails['monitoring_whitelist'] = ['127.0.0.0/8', '::1/128', '10.7.6.245']
+                gitlab_rails['gitlab_default_theme'] = 2
+          ports:
+            - containerPort: 80
+            - containerPort: 22
+          resources:
+            requests:
+              cpu: 500m
+              memory: 2Gi
+            limits:
+              memory: 8Gi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/gitlab
+            - name: data
+              mountPath: /var/opt/gitlab
+          readinessProbe:
+            httpGet:
+              path: /-/readiness
+              port: 80
+            initialDelaySeconds: 180
+            periodSeconds: 15
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /-/liveness
+              port: 80
+            initialDelaySeconds: 300
+            periodSeconds: 30
+            failureThreshold: 30
+      volumes:
+        - name: config
+          emptyDir: {}
+        - name: data
+          persistentVolumeClaim:
+            claimName: gitlab-data
+---
+# Web 流量走 ingress-nginx（NodePort 32037），与 Jenkins/Harbor 统一入口
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gitlab
+  namespace: gitlab
+  annotations:
+    # git http push / CI 产物上传需要放开 body 大小与缓冲（默认 1m 会 413）
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: gitlab.devops.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: gitlab
+                port:
+                  number: 80

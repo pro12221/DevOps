@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "ucloud-cli": {
+      "source": "ucloud/skills",
+      "sourceType": "github",
+      "skillPath": "ucloud-cli/SKILL.md",
+      "computedHash": "fcd8750cd01abc0a5b4d8e65d124f93b8379a205ca5f99b91f903389b7e123e2"
+    }
+  }
+}

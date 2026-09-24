@@ -1,0 +1,43 @@
+controller:
+  # 用 chart 默认镜像（5.9.63 → 2.568.3）：chart 内置插件版本按该版本解析，
+  # 钉死旧 LTS（如 2.492.3）会导致默认插件要求 Jenkins>=2.504.3 而 init 失败
+  # 走 ingress-nginx（NodePort 暴露），Service 用 ClusterIP
+  serviceType: ClusterIP
+  ingress:
+    enabled: true
+    ingressClassName: nginx
+    hostName: jenkins.devops.local
+  # local PV 与节点绑定 → 固定在 devops-m1（与 cluster-plan 5.1 一致）
+  nodeSelector:
+    kubernetes.io/hostname: devops-m1
+  # devops-m1 是 master，带 control-plane:NoSchedule 污点，需容忍
+  tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+  # Jenkins 需要构建任务落在同一节点共享 /data 缓存；资源按 16C/32G 适度分配
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      memory: 4Gi
+  # 允许 Jenkins agent 也以 root 跑 docker build（后续 CI 用）
+  runAsUser: 0
+  fsGroup: 0
+  # 时区
+  javaOpts: "-Duser.timezone=Asia/Shanghai"
+  # 预装插件（kubernetes/git/workflow-aggregator/credentials-binding/timestamper
+  # 等已在 chart 默认 installPlugins 中，这里只补默认没有的）
+  additionalPlugins:
+    - gitlab-plugin
+    - pipeline-stage-view
+    - docker-workflow
+    - blueocean
+persistence:
+  enabled: true
+  # local-path（default SC）自动供给，实际落盘 /data/local-path-provisioner
+  storageClass: "local-path"
+  size: 100Gi
+  annotations:
+    volume.beta.kubernetes.io/storage-class: local-path
