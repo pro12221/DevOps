@@ -273,6 +273,23 @@ scrape_configs:
       - target_label: scrape_source
         replacement: testing
 
+    metric_relabel_configs:
+      # domain(10-89-132-21) → vm_ip(10.89.132.21)，与 CMDB/blackbox 虚机标签对齐
+      - source_labels: [domain]
+        regex: (.*)-(.*)-(.*)-(.*)
+        target_label: vm_ip
+        replacement: ${1}.${2}.${3}.${4}
+      # 丢掉高基数标签（source_file/serial 常带唯一 ID），保留 target_device（虚机网卡名）
+      - regex: (source_file|serial|source_bridge|virtual_interface|mac_address|interface_type|model_type|mtu_size|driver_name|driver_type|driver_cache|driver_discard|disk_type|target_bus)
+        action: labeldrop
+      # 丢掉 info/meta 信息序列（值恒为 1、只带标签，纯浪费）
+      # inovex 版 meta 系列命名: libvirt_domain_info / block_stats_info / interface_stats_info / openstack_info
+      - source_labels: [__name__]
+        regex: libvirt_domain_(info|block_stats_info|interface_stats_info|openstack_info)
+        action: drop
+      # 注：libvirt 只暴露 domain XML 里挂的网卡（eth0/eth1…），不包含虚机内部的 lo，
+      # 所以虚机侧无需再丢 lo，target_device 里不会出现 lo。
+
   # ============ 组件自监控（vmagent + blackbox 探针） ============
   # 测试机 vmagent 顺带抓取各组件自身指标，统一入库供自监控面板使用；
   # 覆盖本机 vmagent、bb1 本机 blackbox、bb2/bb3 两台远端 blackbox
@@ -300,3 +317,12 @@ scrape_configs:
           component: blackbox-exporter
           environment: testing
           scrape_source: testing
+    relabel_configs:
+      # instance 显示本机真实 IP：走 loopback 抓取时 instance 默认 = 127.0.0.1:port，
+      # 「组件实例清单」里本机组件(vmagent/bb1)显示 127.0.0.1，与 bb2/bb3 的真实 IP 不齐。
+      # regex 只匹配 127.0.0.1 目标，bb2/bb3 不动（instance 保持默认 = 真实 IP:port）；
+      # relabel 只改入库标签，实际抓取仍走 127.0.0.1 loopback
+      - source_labels: [__address__]
+        regex: '127\.0\.0\.1:(\d+)'
+        target_label: instance
+        replacement: "10.86.11.94:${1}"

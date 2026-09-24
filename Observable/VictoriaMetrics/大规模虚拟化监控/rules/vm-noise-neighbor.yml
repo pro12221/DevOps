@@ -89,6 +89,86 @@ groups:
           sum by (vm_ip, instance, idc, domain) (rate(libvirt_domain_interface_stats_transmit_bytes_total[5m]))
           * on(vm_ip) group_left(biz1, biz2, owner, status) (uvmp:vm_info > -1)
 
+      # ============ 2026-09 扩充：IOPS / 延迟 / vCPU 剥夺 / 内存真相 / 网络质量 / 容量 ============
+      # 指标名与标签结构均已在库中验证（vcpu_wait 按 vCPU 拆序列必须聚合；timed_out 为 0/1 gauge）
+
+      # 磁盘 IOPS（小随机 IO 型噪声邻居 MB/s 低但 IOPS 爆表，只看 bytes 会漏）
+      - record: uvmp:vm:disk_read_iops:rate5m
+        expr: |
+          sum by (vm_ip, instance, idc, domain) (rate(libvirt_domain_block_stats_read_requests_total[5m]))
+          * on(vm_ip) group_left(biz1, biz2, owner, status) (uvmp:vm_info > -1)
+      - record: uvmp:vm:disk_write_iops:rate5m
+        expr: |
+          sum by (vm_ip, instance, idc, domain) (rate(libvirt_domain_block_stats_write_requests_total[5m]))
+          * on(vm_ip) group_left(biz1, biz2, owner, status) (uvmp:vm_info > -1)
+
+      # 磁盘平均延迟（await ms = Δ服务时长/Δ请求数，各设备加权合并；无 IO 时分母为 0 不产样本）
+      - record: uvmp:vm:disk_read_await_ms
+        expr: |
+          (
+            sum by (vm_ip, instance, idc, domain) (rate(libvirt_domain_block_stats_read_time_seconds_total[5m]))
+            / sum by (vm_ip, instance, idc, domain) (rate(libvirt_domain_block_stats_read_requests_total[5m]))
+          ) * 1000
+          * on(vm_ip) group_left(biz1, biz2, owner, status) (uvmp:vm_info > -1)
+      - record: uvmp:vm:disk_write_await_ms
+        expr: |
+          (
+            sum by (vm_ip, instance, idc, domain) (rate(libvirt_domain_block_stats_write_time_seconds_total[5m]))
+            / sum by (vm_ip, instance, idc, domain) (rate(libvirt_domain_block_stats_write_requests_total[5m]))
+          ) * 1000
+          * on(vm_ip) group_left(biz1, biz2, owner, status) (uvmp:vm_info > -1)
+
+      # vCPU 等待（steal 等价：vCPU 想跑但没分到 pCPU 的时长，秒/秒 ≈ 被剥夺的核数；
+      # 与 vm:cpu_cores_used（加害者视角）互补，这是受害者视角。原始序列按 vCPU 拆（~3 万虚机 × vCPU 数），必须聚合
+      - record: uvmp:vm:vcpu_wait:rate5m
+        expr: |
+          sum by (vm_ip, instance, idc, domain) (rate(libvirt_domain_vcpu_wait_seconds_total[5m]))
+          * on(vm_ip) group_left(biz1, biz2, owner, status) (uvmp:vm_info > -1)
+
+      # 内存真实占用：RSS（气球回收后宿主机实际付出的内存）与配置上限
+      - record: uvmp:vm:memory_rss_bytes
+        expr: |
+          sum by (vm_ip, instance, idc, domain) (libvirt_domain_memory_stats_rss_bytes)
+          * on(vm_ip) group_left(biz1, biz2, owner, status) (uvmp:vm_info > -1)
+      - record: uvmp:vm:memory_max_bytes
+        expr: |
+          sum by (vm_ip, instance, idc, domain) (libvirt_domain_info_maximum_memory_bytes)
+          * on(vm_ip) group_left(biz1, biz2, owner, status) (uvmp:vm_info > -1)
+
+      # 虚机换页（counter；rate > 0 即虚机在换页，主机内存压力传导的信号）
+      - record: uvmp:vm:swap_in_bytes:rate5m
+        expr: |
+          sum by (vm_ip, instance, idc, domain) (rate(libvirt_domain_memory_stats_swap_in_bytes[5m]))
+          * on(vm_ip) group_left(biz1, biz2, owner, status) (uvmp:vm_info > -1)
+      - record: uvmp:vm:swap_out_bytes:rate5m
+        expr: |
+          sum by (vm_ip, instance, idc, domain) (rate(libvirt_domain_memory_stats_swap_out_bytes[5m]))
+          * on(vm_ip) group_left(biz1, biz2, owner, status) (uvmp:vm_info > -1)
+
+      # 网卡丢包/错包（虚机网络质量，宿主机侧可见）
+      - record: uvmp:vm:net_receive_drops:rate5m
+        expr: |
+          sum by (vm_ip, instance, idc, domain) (rate(libvirt_domain_interface_stats_receive_drops_total[5m]))
+          * on(vm_ip) group_left(biz1, biz2, owner, status) (uvmp:vm_info > -1)
+      - record: uvmp:vm:net_transmit_drops:rate5m
+        expr: |
+          sum by (vm_ip, instance, idc, domain) (rate(libvirt_domain_interface_stats_transmit_drops_total[5m]))
+          * on(vm_ip) group_left(biz1, biz2, owner, status) (uvmp:vm_info > -1)
+      - record: uvmp:vm:net_receive_errs:rate5m
+        expr: |
+          sum by (vm_ip, instance, idc, domain) (rate(libvirt_domain_interface_stats_receive_errors_total[5m]))
+          * on(vm_ip) group_left(biz1, biz2, owner, status) (uvmp:vm_info > -1)
+      - record: uvmp:vm:net_transmit_errs:rate5m
+        expr: |
+          sum by (vm_ip, instance, idc, domain) (rate(libvirt_domain_interface_stats_transmit_errors_total[5m]))
+          * on(vm_ip) group_left(biz1, biz2, owner, status) (uvmp:vm_info > -1)
+
+      # 虚机盘虚拟大小（容量承诺；面板再按 instance sum = 每宿主机存储超卖水位，thin provisioning 规划用）
+      - record: uvmp:vm:disk_capacity_bytes
+        expr: |
+          sum by (vm_ip, instance, idc, domain) (libvirt_domain_block_stats_capacity_bytes)
+          * on(vm_ip) group_left(biz1, biz2, owner, status) (uvmp:vm_info > -1)
+
 # =====================================================================
 # Grafana 面板 PromQL（采集全量网卡，面板里按需只显示有流量的）
 # =====================================================================

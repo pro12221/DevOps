@@ -33,6 +33,8 @@
     cmdb_api_key: "{{ lookup('ansible.builtin.env', 'CMDB_API_KEY') }}"
     vmalert_port: 8880
     rules_dir: /etc/vmalert/rules
+    # 仓库侧规则文件名清单：用于清理目标机 rules 目录残留的过期文件，防止同名规则组重复加载
+    rules_src_names: "{{ lookup('ansible.builtin.fileglob', playbook_dir ~ '/../rules/*.yml', wantlist=True) | map('basename') | list }}"
     retention: 30d
     testing_idc_prefix: "TEST"
     vmagent_role: >-
@@ -118,6 +120,27 @@
         mode: "0600"
       no_log: true
       when: "'vmagent_production' in group_names or 'vmagent_testing' in group_names"
+
+    - name: 收集目标机 rules 目录现有规则文件
+      ansible.builtin.find:
+        paths: "{{ rules_dir }}"
+        patterns: ["*.yml", "*.yaml"]
+      register: rules_on_host
+      when: "'vmalert' in group_names"
+
+    - name: 删除仓库中已不存在的残留规则文件
+      # copy 目录不会删除目标端多余文件：曾残留 uvmp_rules.yml，与 vm-noise-neighbor.yml
+      # 同名规则组各加载一份、重复求值（2026-09 虚机看板排障时发现）
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ rules_on_host.files | default([]) }}"
+      loop_control:
+        label: "{{ item.path }}"
+      when:
+        - "'vmalert' in group_names"
+        - item.path | basename not in rules_src_names
+      notify: 重启 vmalert
 
     - name: 分发 vmalert 规则文件
       ansible.builtin.copy:
@@ -256,7 +279,10 @@
       ansible.builtin.systemd:
         name: vmalert
         enabled: true
-        state: started
+        # restarted 而非 started：started 对运行中服务是 no-op，规则文件变更/残留清理
+        # 不会生效——2026-09-23 发现进程自 09-20 起一直加载磁盘上已删除的
+        # uvmp_rules.yml、双份规则组重复求值，故与 vmagent 一律强制重启
+        state: restarted
         daemon_reload: true
       when: "'vmalert' in group_names"
 

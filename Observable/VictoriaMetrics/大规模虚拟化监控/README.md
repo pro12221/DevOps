@@ -132,16 +132,27 @@ vmagent ──► VictoriaMetrics :8428 ◄── vmalert (读+写, :8880)
   join 到 libvirt 指标上，生成 `uvmp:vm:cpu_percent`、`uvmp:vm:memory_used_percent`、
   `uvmp:vm:disk_*`、`uvmp:vm:net_*`、`uvmp:vm:vcpus` 等录制序列，Grafana 面板
   直接查询，免去每次运行时扫全量 blackbox 序列 join 的开销
+- 2026-09 指标扩充（同组追加 14 条录制规则，指标名均已库中验证）：
+  `disk_*_iops` / `disk_*_await_ms`（小随机 IO 型噪声邻居）、`vcpu_wait`
+  （受害者视角的 CPU 剥夺）、`memory_rss/max`（气球回收后真实内存）、
+  `swap_in/out`（虚机换页）、`net_*_drops/errs`（网络质量）、
+  `disk_capacity_bytes`（thin provisioning 容量承诺）——对应虚机看板新增
+  IOPS/延迟、vCPU 与内存详情、网络质量三个分区，宿主机看板新增磁盘 I/O 质量、
+  内存压力、网络质量、系统健康四个分区（util/await/IOPS、超卖/OOM、丢包重传、
+  inode/fd/ECC/时钟偏移/采集器异常）
 - 存储目录 `/data/vm`，保留 30 天；vmagent 暂存队列 `/data/vmagent-queue`
 
 ### 5. 可视化
 
-Grafana 数据源指向 `VictoriaMetrics :8428`，四个仪表盘：
+Grafana 数据源指向 `VictoriaMetrics :8428`，五个仪表盘：
 
 - `uvmp-host-ping.json` — 宿主机 ICMP/TCP 拨测
 - `uvmp-vm-ping.json` — 虚机 ICMP/TCP 拨测
 - `uvmp-host-resource.json` — 宿主机资源
 - `uvmp-vm-resource.json` — 虚机资源（查 `uvmp:vm:*` 录制序列）
+- `uvmp-victoriametrics-selfmon.json` — 组件自监控（查 `self-monitoring` job 自身指标：vmagent
+  抓取/远程写入、VM 存储引擎/缓存、vmalert 规则求值、blackbox 探针分片健康；按 `scrape_source`
+  变量切环境，活跃抓取 worker 面板直接盯踩坑 #5 的 EMFILE 风险）
 
 ## 文件索引
 
@@ -158,7 +169,7 @@ Grafana 数据源指向 `VictoriaMetrics :8428`，四个仪表盘：
 | `ansible/deploy-vm.yml` | 部署 VM 三件套 + cmdb-sd cron 链路 |
 | `ansible/deploy-host-exporters.yml` | 部署宿主机 node_exporter + libvirt_exporter |
 | `ansible/deploy-blackbox.yml` | 部署拨测机 blackbox_exporter |
-| `grafana/uvmp-*.json` | 四个 Grafana 仪表盘 |
+| `grafana/uvmp-*.json` | 五个 Grafana 仪表盘（含 `uvmp-victoriametrics-selfmon.json` 组件自监控） |
 
 ## 部署顺序
 
@@ -357,8 +368,59 @@ Echo），该路径受 `net.ipv4.ping_group_range` 门控；内核默认 `"1 0"`
 - 非特权 ping socket 按 gid 门控（ping_group_range），特权 raw socket 按 capability
   门控（CAP_NET_RAW），blackbox_exporter 两条都试——想日志干净就得让第一条也通。
 
-### 待排查：生产 libvirt-vm 1837 个目标全部 up=0
+### 7. 自监控组件 instance 显示 127.0.0.1，实例清单无法区分机器
 
-生产 vmagent（10.69.81.68）抓 libvirt-vm 1837/1837 全部失败，测试环境 71/71 正常。
-node-exporter 端口修复后需确认生产宿主机 `:9177` 是否可达 / 是否部署了
-libvirt_exporter（本环境 22 端口不通无法 SSH 登录确认，待人工排查）。
+**现象**：自监控看板「组件实例清单」7 个实例里 5 个显示 `127.0.0.1:端口`——两台 vmagent
+都是 `127.0.0.1:8429` 分不清是哪台，只有 bb2/bb3 远端探针显示真实 IP。
+
+**原因**：self-monitoring job 抓本机组件走 loopback，`instance` 标签默认 = `__address__`
+= `127.0.0.1:port`。
+
+**修复**（2026-09）：两份抓取配置的 self-monitoring job 增加 relabel，把 127.0.0.1 目标的
+instance 改写为本机真实 IP:port（生产 → `10.69.81.68`，测试 → `10.86.11.94`）；regex 只匹配
+`127.0.0.1`，bb2/bb3 保持真实 IP 不动。只改入库标签，抓取仍走 loopback。
+
+**教训**：
+- `instance` 默认等于 `__address__`，凡 loopback 抓本机组件的 job 都要显式 relabel 成
+  可区分的真实 IP
+- 改 `instance` = 切换时间序列：旧序列停止写入，instant 查询 5 分钟后看不到，历史随
+  保留期自然过期；改前先确认没有查询按旧值过滤（本仓库已核对为 0 处）
+
+### 8. 环境拆分丢了 metric_relabel_configs，虚机资源看板全空
+
+**现象**：虚机资源看板（uvmp-vm-resource）全空。库里 `uvmp:vm:*` 录制序列 0 条，但
+`uvmp:vm_info`（31088 条）与 `vm:*` 组（无 join）产出正常；vmalert 规则全部 healthy、0 错误。
+
+**原因**：`prometheus.yml` 拆分为 production/testing 两份配置时，libvirt-vm job 的
+`metric_relabel_configs` 没跟着迁移，`domain`(10-89-132-21) → `vm_ip`(10.89.132.21) 的
+标签转换丢失。入库 libvirt 序列全部没有 `vm_ip` 标签，`uvmp-vm-enrich` 组 8 条规则里
+6 条 `on(vm_ip)` join 落空、产出 0 样本——**录制规则产出为空不报错**，规则状态照样
+healthy，只能靠 count 各环节序列数发现断点。
+
+**修复**（2026-09）：把三条 metric_relabel 规则迁回两份环境配置的 libvirt-vm job
+（vm_ip 转换 / 高基数标签 labeldrop / info 空序列 drop）。排障中另发现
+`/etc/vmalert/rules/` 残留旧文件 `uvmp_rules.yml`，与 `vm-noise-neighbor.yml` 同名
+规则组各加载一份、重复求值（copy 目录不会删目标端多余文件），deploy-vm.yml 已加
+清理任务。2026-09-23 复盘再补一刀：「启动 vmalert」任务 `state: started` 对运行中
+服务是 no-op——磁盘上的残留文件即使删了，进程不重启就继续按启动时的清单加载，
+曾出现进程自 09-20 起重复求值磁盘上已不存在的文件；该任务已改 `state: restarted`。
+
+**教训**：
+- 配置拆分/重构要逐 job 对比新旧两段 relabel（`relabel_configs` +
+  `metric_relabel_configs` 都要过）；功能段丢失不会让服务报错，只在下游 join 断链
+- 排障顺序：沿数据链 count 每一环的产物（原始序列 → 录制序列 → 看板查询），空在哪环
+  断在哪环；「规则 healthy」≠「规则有产出」，要看
+  `vmalert_recording_rules_last_evaluation_samples`
+
+### 待排查：生产宿主机未部署 exporters（1837 台 node/libvirt 全 connection refused）
+
+生产 vmagent（10.69.81.68）抓 node-exporter 与 libvirt-vm 均 1837/1837 失败，测试
+71/71 正常。2026-09-23 复查定性：
+
+- 配置已正确：vmagent 实际抓的就是 `:9100`/`:9177`（targets API 核实），本机
+  self-monitoring 3/3 up
+- 错误形态 1833/1837 为 `connection refused`——宿主机可达（收到 RST），只是 9100/9177
+  无进程监听 → **生产宿主机没部署 node_exporter / libvirt_exporter**
+- blackbox ICMP：生产宿主机 1833/1837 存活，主机与网络本身无问题
+- 待办：从能 SSH 到生产宿主机的控制端跑 `ansible-playbook -i hosts.ini
+  deploy-host-exporters.yml`（当前控制环境到生产宿主机 22 端口不通，无法直接部署）

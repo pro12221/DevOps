@@ -716,6 +716,662 @@
         }
       ],
       "type": "table"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 42 },
+      "id": 105,
+      "panels": [],
+      "title": "磁盘 IOPS 与延迟",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "当前宿主机（及过滤范围）上所有虚机的磁盘 IOPS（各 block 设备求和）。小随机 IO 型噪声邻居 MB/s 不高但 IOPS 爆表，与「磁盘读写速率」面板互为补充。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "mode": "none", "group": "A" },
+            "axisCenteredZero": false,
+            "hideFrom": { "tooltip": false, "viz": false, "legend": false },
+            "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "unit": "iops",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 43 },
+      "id": 12,
+      "options": {
+        "legend": {
+          "calcs": ["lastNotNull"],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "uvmp:vm:disk_read_iops:rate5m{idc=~\"$idc\", instance=~\"$host\", biz1=~\"$biz1\", biz2=~\"$biz2\"}",
+          "legendFormat": "{{vm_ip}} 读",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "uvmp:vm:disk_write_iops:rate5m{idc=~\"$idc\", instance=~\"$host\", biz1=~\"$biz1\", biz2=~\"$biz2\"}",
+          "legendFormat": "{{vm_ip}} 写",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "磁盘 IOPS 对比 (vm_ip)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "虚机磁盘平均延迟（await = 服务时长/请求数，各设备加权合并）。定位「哪台虚机拖慢共享存储」最直接的指标；无 IO 的时段无数据点是正常的。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "mode": "none", "group": "A" },
+            "axisCenteredZero": false,
+            "hideFrom": { "tooltip": false, "viz": false, "legend": false },
+            "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "unit": "ms",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 43 },
+      "id": 13,
+      "options": {
+        "legend": {
+          "calcs": ["lastNotNull"],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "uvmp:vm:disk_read_await_ms{idc=~\"$idc\", instance=~\"$host\", biz1=~\"$biz1\", biz2=~\"$biz2\"}",
+          "legendFormat": "{{vm_ip}} 读",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "uvmp:vm:disk_write_await_ms{idc=~\"$idc\", instance=~\"$host\", biz1=~\"$biz1\", biz2=~\"$biz2\"}",
+          "legendFormat": "{{vm_ip}} 写",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "磁盘平均延迟对比 (vm_ip)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 51 },
+      "id": 106,
+      "panels": [],
+      "title": "vCPU 与内存详情",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "每台虚机的 vCPU 等待速率（vcpu_wait，秒/秒 ≈ 被剥夺的核数）。虚机版 steal：想运行但没分到 pCPU 的时间。宿主机 CPU 高时结合 CPU 使用率面板找噪声邻居（加害者），本面板看受害者。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "mode": "none", "group": "A" },
+            "axisCenteredZero": false,
+            "hideFrom": { "tooltip": false, "viz": false, "legend": false },
+            "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 52 },
+      "id": 14,
+      "options": {
+        "legend": {
+          "calcs": ["lastNotNull"],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "uvmp:vm:vcpu_wait:rate5m{idc=~\"$idc\", instance=~\"$host\", biz1=~\"$biz1\", biz2=~\"$biz2\"}",
+          "legendFormat": "{{vm_ip}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "vCPU 等待（被剥夺核数）",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "虚机 RSS（气球回收后宿主机实际付出的内存）与配置上限对比。RSS 明显低于按 used_percent 折算的值，说明 balloon 驱动回收了大量内存（超卖水位参考）。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "mode": "none", "group": "A" },
+            "axisCenteredZero": false,
+            "hideFrom": { "tooltip": false, "viz": false, "legend": false },
+            "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "unit": "bytes",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 52 },
+      "id": 15,
+      "options": {
+        "legend": {
+          "calcs": ["lastNotNull"],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "uvmp:vm:memory_rss_bytes{idc=~\"$idc\", instance=~\"$host\", biz1=~\"$biz1\", biz2=~\"$biz2\"}",
+          "legendFormat": "{{vm_ip}} RSS",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "uvmp:vm:memory_max_bytes{idc=~\"$idc\", instance=~\"$host\", biz1=~\"$biz1\", biz2=~\"$biz2\"}",
+          "legendFormat": "{{vm_ip}} 上限",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "内存 RSS 对比（气球回收后）",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "虚机换页活动（memory_stats_swap_in/out 计数器速率）。持续 > 0 说明虚机在换页，通常是宿主机内存压力传导到虚机。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "mode": "none", "group": "A" },
+            "axisCenteredZero": false,
+            "hideFrom": { "tooltip": false, "viz": false, "legend": false },
+            "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "unit": "Bps",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 60 },
+      "id": 16,
+      "options": {
+        "legend": {
+          "calcs": ["lastNotNull"],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "uvmp:vm:swap_in_bytes:rate5m{idc=~\"$idc\", instance=~\"$host\", biz1=~\"$biz1\", biz2=~\"$biz2\"}",
+          "legendFormat": "{{vm_ip}} 换入",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "uvmp:vm:swap_out_bytes:rate5m{idc=~\"$idc\", instance=~\"$host\", biz1=~\"$biz1\", biz2=~\"$biz2\"}",
+          "legendFormat": "{{vm_ip}} 换出",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "虚机换页 (swap in/out)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "每台宿主机上所有虚机磁盘的虚拟大小合计（thin provisioning 承诺量）。与宿主机物理盘容量对比即为存储超卖水位。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "mode": "none", "group": "A" },
+            "axisCenteredZero": false,
+            "hideFrom": { "tooltip": false, "viz": false, "legend": false },
+            "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "unit": "bytes",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 60 },
+      "id": 17,
+      "options": {
+        "legend": {
+          "calcs": ["lastNotNull"],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "sum by (instance) (uvmp:vm:disk_capacity_bytes{idc=~\"$idc\", instance=~\"$host\", biz1=~\"$biz1\", biz2=~\"$biz2\"})",
+          "legendFormat": "{{instance}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "宿主机磁盘容量承诺（虚机盘合计）",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 68 },
+      "id": 107,
+      "panels": [],
+      "title": "网络质量",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "虚机网卡丢包与错包速率（drops/errors × 收/发方向，各 interface 求和）。正常应为 0；持续非 0 表示虚机网络质量问题（队列溢出、驱动丢包）。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "mode": "none", "group": "A" },
+            "axisCenteredZero": false,
+            "hideFrom": { "tooltip": false, "viz": false, "legend": false },
+            "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "unit": "pps",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 69 },
+      "id": 18,
+      "options": {
+        "legend": {
+          "calcs": ["lastNotNull"],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "uvmp:vm:net_receive_drops:rate5m{idc=~\"$idc\", instance=~\"$host\", biz1=~\"$biz1\", biz2=~\"$biz2\"}",
+          "legendFormat": "{{vm_ip}} 收丢包",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "uvmp:vm:net_transmit_drops:rate5m{idc=~\"$idc\", instance=~\"$host\", biz1=~\"$biz1\", biz2=~\"$biz2\"}",
+          "legendFormat": "{{vm_ip}} 发丢包",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "uvmp:vm:net_receive_errs:rate5m{idc=~\"$idc\", instance=~\"$host\", biz1=~\"$biz1\", biz2=~\"$biz2\"}",
+          "legendFormat": "{{vm_ip}} 收错包",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "uvmp:vm:net_transmit_errs:rate5m{idc=~\"$idc\", instance=~\"$host\", biz1=~\"$biz1\", biz2=~\"$biz2\"}",
+          "legendFormat": "{{vm_ip}} 发错包",
+          "range": true,
+          "refId": "D"
+        }
+      ],
+      "title": "网卡丢包/错包对比 (vm_ip)",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 77 },
+      "id": 108,
+      "panels": [],
+      "title": "采集健康与迁移",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "每台宿主机上当次抓取统计超时的虚机数（libvirt_domain_timed_out，0/1 gauge 求和）。非 0 即有虚机指标缺口——踩坑 #2（libvirt 统计等锁超时）的监控哨兵。注：本面板查原始 libvirt 序列，仅按 idc/宿主机过滤（业务过滤不适用）。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "mode": "none", "group": "A" },
+            "axisCenteredZero": false,
+            "hideFrom": { "tooltip": false, "viz": false, "legend": false },
+            "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 78 },
+      "id": 19,
+      "options": {
+        "legend": {
+          "calcs": ["lastNotNull"],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "sum by (instance) (libvirt_domain_timed_out{job=\"libvirt-vm\", idc=~\"$idc\", instance=~\"$host\"})",
+          "legendFormat": "{{instance}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "统计超时虚机数（按宿主机，踩坑#2 哨兵）",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "热迁移数据同步进度（job_info data_processed / data_total）。仅迁移进行期间有数据，平时为空是正常的；迁移中的虚机进度应快速爬向 100%。注：原始 libvirt 序列，仅按 idc/宿主机过滤。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": { "mode": "none", "group": "A" },
+            "axisCenteredZero": false,
+            "hideFrom": { "tooltip": false, "viz": false, "legend": false },
+            "scaleDistribution": { "type": "linear" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "mappings": [],
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 78 },
+      "id": 20,
+      "options": {
+        "legend": {
+          "calcs": ["lastNotNull"],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "100 * libvirt_domain_job_info_data_processed_bytes{job=\"libvirt-vm\", idc=~\"$idc\", instance=~\"$host\"} / libvirt_domain_job_info_data_total_bytes{job=\"libvirt-vm\", idc=~\"$idc\", instance=~\"$host\"}",
+          "legendFormat": "{{vm_ip}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "热迁移进度 (vm_ip)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+      "description": "当前过滤范围内所有虚机的磁盘容量明细（各 block 设备虚拟大小合计，thin provisioning 承诺量），按容量倒序。",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": {
+            "align": "auto",
+            "cellOptions": { "type": "auto" },
+            "filterable": true,
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 107374182400 },
+              { "color": "red", "value": 536870912000 }
+            ]
+          },
+          "unit": "bytes",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 86 },
+      "id": 21,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": ["count"],
+          "show": true
+        },
+        "showHeader": true,
+        "sortBy": [
+          { "desc": true, "displayName": "磁盘容量" }
+        ]
+      },
+      "pluginVersion": "12.1.0",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${DS_VM}" },
+          "editorMode": "code",
+          "expr": "uvmp:vm:disk_capacity_bytes{idc=~\"$idc\", instance=~\"$host\", biz1=~\"$biz1\", biz2=~\"$biz2\"}",
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "虚机磁盘容量明细（thin 承诺量）",
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "__name__": true,
+              "job": true,
+              "type": true,
+              "os": true,
+              "biz1": true,
+              "biz2": true,
+              "domain": true
+            },
+            "includeByName": {},
+            "indexByName": {
+              "vm_ip": 0,
+              "instance": 1,
+              "idc": 2,
+              "owner": 3,
+              "status": 4,
+              "Value": 5
+            },
+            "renameByName": {
+              "vm_ip": "虚机 IP",
+              "instance": "宿主机",
+              "idc": "机房",
+              "owner": "所有者",
+              "status": "CMDB状态",
+              "Value": "磁盘容量"
+            }
+          }
+        }
+      ],
+      "type": "table"
     }
   ],
   "refresh": "1m",
