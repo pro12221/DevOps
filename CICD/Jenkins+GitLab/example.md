@@ -180,7 +180,7 @@ curl -u admin:Harbor12345 -H "Host: harbor.devops.local" -X POST \
 > 坑（全踩过）：
 > - 项目级端点 `POST /api/v2.0/projects/demo/robots` 已删（404）；必须系统级 `/api/v2.0/robots` + `level:"project"` + `permissions[].namespace`
 > - 用户名格式是 **`robot$项目名+robot名`**（`robot$demo+jenkins-push`），不是老的 `demo+jenkins-push`
-> - `duration` 缺省报 400；`GET /api/v2.0/robots` 列表返回空（quirk），按 id 查单个：`GET /api/v2.0/robots/1`
+> - `duration` 缺省报 400；`GET /api/v2.0/robots` 列表返回空（quirk，`?project_id=` 同样空），按 id 查单个：`GET /api/v2.0/robots/1`。**UI 项目 Robot Accounts 标签靠的也是这个 list API → 同样空白，"看不见"≠不存在**；robot 也不会出现在 Administration → Users（非用户实体）。管理全走 by-id：看 `GET /robots/1`、启停 `PUT`（`disable`）、吊销 `DELETE`；secret 丢失无重发入口，轮换 = 建新 robot → 更新 K8s Secret → 验证构建 → 删旧。
 
 ### 3. 转存基础镜像（香港拉 docker.io 不稳，全部走 Harbor）
 
