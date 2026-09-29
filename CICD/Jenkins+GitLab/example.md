@@ -136,6 +136,8 @@ pipeline {
 }
 ```
 
+> 语法分层（Pipeline 只认 Groovy，无 YAML 选项）：本文件 99% 是**声明式 DSL**（`pipeline/agent/stages/steps` 结构化骨架，有限语法换编译期检查）；`sh '''…'''` 里是**纯 bash**，真正逻辑（buildctl 命令）全在这层；要变量运算/条件/循环才用 `script { … }` 逃生舱写原生 Groovy（本文未用）。选 Groovy 不选 YAML 是要图灵完备（凭据注入、循环、异常处理）；声明式 + sh 两层已覆盖绝大多数场景。
+
 **Dockerfile**（FROM 用 Harbor 转存镜像，绕开 docker.io 香港超时；转存见第三节）：
 
 ```dockerfile
@@ -250,6 +252,16 @@ J=http://jenkins.devops.local:32037
 CRUMB=$(curl -s -c /tmp/cj.txt -u "admin:$PW" "$J/crumbIssuer/api/xml?xpath=concat(//crumbRequestField,\":\",//crumb)")
 ```
 
+> 心法：**Jenkins UI 只是这批 REST 的一层皮**（Stapler 框架），任何页面 URL 加后缀 `/api/json` 即得该对象的 JSON。crumb 本体 = CSRF 令牌，防"恶意网页借你登录态的浏览器盲发 POST"——跨站脚本读不到 Jenkins 响应、拿不到 crumb；curl 侧密码 + crumb 齐备即自证"能读响应"。本节五个接口与 UI 操作对照：
+>
+> | REST | 等价 UI 操作 | 要点 |
+> |---|---|---|
+> | `GET /crumbIssuer/api/xml` | 无（程序专用） | xpath concat 一步拼成 `Jenkins-Crumb:值` |
+> | `POST …/createCredentials` | Manage Jenkins → Credentials → Add | 表单序列化：`credentials` 参数是凭据对象的 XML（Java 对象↔XML 互转） |
+> | `POST /scriptText` | Manage Jenkins → Script Console | Script Console 的 REST 版，Groovy 直接操纵 JVM 活对象；改完必须 `Jenkins.get().save()` 才落盘 config.xml |
+> | `POST /createItem?name=` | New Item → Pipeline | body 就是 job 的 config.xml，createItem = 存文件起名 |
+> | `POST /job/X/build` | 「立即构建」按钮 | 201 = 已入队≠已开始；build 号开始执行才出现 → 轮询 `?tree=building,result` |
+
 ### 1. 凭据（gitlab-root-userpass：root/PAT，http clone 私仓用）
 
 ```bash
@@ -334,6 +346,7 @@ curl -s -u "admin:$PW" -b /tmp/cj.txt -H "$CRUMB" \
 ```
 
 > job 名必须与将来 webhook URL 路径一致（`/project/demo-app`）。Harbor 认证不进 Jenkins 凭据（走 K8s Secret + session）。
+> XML 释义：`CpsScmFlowDefinition` = Jenkinsfile 从 SCM 取（区别于把脚本贴 job 里）；`<lightweight>true</lightweight>` = 取脚本时只 fetch Jenkinsfile 单文件（controller 侧，日志开头 `Obtained Jenkinsfile from git …`）。代码全量 clone 不用它操心——声明式 pipeline 默认在用户 stage 前自动插 **"Declarative: Checkout SCM"** 隐式 stage（#5 日志实测：`Running on buildkit-…` 后紧跟 `Cloning … Checking out Revision deff894`），$WORKSPACE 因此拿全文件；要省掉得显式 `options { skipDefaultCheckout() }`。
 
 ---
 
