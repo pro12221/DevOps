@@ -48,6 +48,10 @@ curl -H "Host: harbor.devops.local"  http://123.58.219.112:32037/api/v2.0/health
 
 集群内组件（GitLab/Jenkins agent/构建器）都要用 `*.devops.local` 域名，给 devops 集群 CoreDNS 加 hosts（File 有 `reload`，改完约 30s 生效；等不及就重启 pod）。
 
+**为什么 svc 解析替代不了？** CoreDNS 的 kubernetes 插件只注册 `*.ns.svc` zone，`harbor.devops.local` 不归它管（不加 hosts = NXDOMAIN）。也不能改用 svc 名，因为这条链路里**域名是数据、不是地址**：镜像引用字符串（Dockerfile FROM / push 目标 / 将来 prod 拉取）、registry 401 的 token realm（实测 `Www-Authenticate: Bearer realm="http://harbor.devops.local:32037/service/token"`，跟随请求 Host 生成）、`docker config.json` auths 与 `buildkitd.toml [registry."host:port"]` 的索引 key——全按 `harbor.devops.local:32037` 这一个身份。换成 svc 名，推出来的镜像集群外就拉不到了。纯 service 互连的地方本来就走 svc（agent 回连 `jenkins.jenkins.svc:8080`、buildctl 连 `buildkitd.jenkins.svc:1234`），hosts 只为"域名是身份"的场景。
+
+**一个 IP 配三个域名**：三件套共享同一扇门（ingress-nginx NodePort 32037），IP 只管"门在哪"，域名靠 HTTP Host 头在 controller 分流（name-based virtual hosting）。指 m1 内网 IP 而非 EIP：流量留 VPC 内网不走香港公网小水管；NodePort 每台节点都监听（kube-proxy 全节点写规则），任意节点 IP 皆可，m1 只是稳定锚点。
+
 ```bash
 # 备份（Corefile 改坏 CoreDNS 全挂）
 kubectl --context devops -n kube-system get cm coredns -o yaml > /tmp/coredns-backup.yaml
@@ -67,6 +71,8 @@ kubectl --context devops run dns-check --rm -i --restart=Never --image=busybox:1
 # 期望：Address 10.7.6.245，返回 {"status":"healthy"}
 ```
 
+> 流量路径（集群内 push 为例）：CoreDNS 命中 → `10.7.6.245:32037`（NodePort，端口由镜像引用自带，hosts 只映射"名→IP"）→ m1 kube-proxy DNAT → ingress-nginx pod（实际在 devops-w1，externalTrafficPolicy=Cluster 允许跨节点跳）→ 按 Host 头匹配 Ingress → `harbor-core:80` → `/v2/` 反代 registry。集群外走 EIP、集群内走 VPC 内网，殊途同归进同一个 ingress。⚠️ 实测节点 IP **`:80` refused、`:32037` 通**——hosts 指的必须是能打 NodePort 的节点 IP。
+
 > prod 集群要拉 Harbor 镜像时同样做法，hosts IP 换 prod master 内网 IP（本文构建段不涉及 prod）。
 
 ---
@@ -75,7 +81,7 @@ kubectl --context devops run dns-check --rm -i --restart=Never --image=busybox:1
 
 ### 1. 建 PAT
 
-界面（root 登录 → 头像 → Access tokens → Add new token：scopes `api`、`read_repository`、`write_repository`），或 rails：
+界面（17.9 新导航藏得深）：root 登录 → 右上角头像 → **Edit profile** → 左侧 **Access tokens** → Add new token；懒得点直接开 `http://gitlab.devops.local:32037/-/user_settings/personal_access_tokens`（旧路径 `/-/profile/personal_access_tokens` 会自动跳转）。Expiration **必填**（16.0 起不许永不过期）；scopes 勾 `api`、`read_repository`、`write_repository`；创建后 token（`glpat-` 开头）**只显示一次**。别走岔：项目/群组 `Settings → Access tokens` 是另一类令牌（机器人用户），PAT 只在"用户设置"里。或 rails 兜底：
 
 ```bash
 kubectl --context devops -n gitlab exec gitlab-0 -c gitlab -- gitlab-rails runner \
