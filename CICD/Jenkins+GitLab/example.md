@@ -1,14 +1,14 @@
 # BuildKit 发布流水线完整示例（Jenkins → GitLab → Harbor）
 
-> 2026-09-29 · 从三件套就绪到构建全绿的**完整实操流程**，所有配置均取自本环境真实值，照抄可复现。
+> 2026-09-29 · 从三件套就绪到 **git push 自动触发构建 + commit 状态回报**的完整实操流程，所有配置均取自本环境真实值，照抄可复现。
 > 姊妹篇：三件套安装《环境搭建.md》· Cloud/模版字段详解《Jenkins-Cloud与PodTemplate配置详解.md》· 设计与踩坑详录《流水线部署步骤.md》
-> 实测结果：构建 #3/#4/#5 连绿，产物 `demo/demo-app:b3/b4/b5`（同 digest），#4/#5 命中缓存（`CACHED`）。
+> 实测结果：构建 #3-#8 六连绿；#3-#6 同 digest（缓存命中），#7/#8 因 index.html 改版产出新 digest；**#8 由 git push 触发 webhook 自动构建**，commit status `build`=success 回报 GitLab（§六.4）。
 
 ## 〇、成果与链路
 
 ```
-git push → GitLab（webhook 待配，当前手动/REST 触发）
-              ↓
+git push → GitLab → webhook（/project/demo-app，X-Gitlab-Token 鉴权，§六.4）
+              ↓ 自动触发（手动/REST 亦可）
 Jenkins job demo-app（Pipeline from SCM，lightweight checkout）
   └─ agent pod（cloud 模版 buildkit，ns jenkins，label buildkit）
        ├─ jnlp：回连 controller（chart 预置）
@@ -19,6 +19,7 @@ Jenkins job demo-app（Pipeline from SCM，lightweight checkout）
                       ├─ FROM：demo/busybox:1.36（先转存进 Harbor）
                       ├─ PUSH：demo/demo-app:b$BUILD_NUMBER（registry.insecure=true）
                       └─ 缓存：导入/导出 demo/cache:demo-app
+  ↩ gitlabCommitStatus(name:'build') → commit 状态回报 GitLab（target_url 指回本次构建页）
 ```
 
 固定值速查（本环境）：
@@ -32,6 +33,7 @@ Jenkins job demo-app（Pipeline from SCM，lightweight checkout）
 | Harbor | admin / `Harbor12345`，项目 `demo`（project_id 3） |
 | 构建 robot | `robot$demo+jenkins-push` / `yacDNbefbXGp0MjEnD1jCAWjmWMESAEt` |
 | GitLab PAT | `glpat-REDACTED`（root，api + read/write_repository） |
+| Webhook token | `gltok-demo-2026`（Jenkins trigger `secretToken` 与 GitLab webhook `token` 两端必须一致） |
 
 前置：本机 hosts 已加 `123.58.219.112 jenkins.devops.local gitlab.devops.local harbor.devops.local`，`kubectl --context devops` 可用。三件套未装先看《环境搭建.md》。
 
@@ -109,7 +111,11 @@ GL=http://123.58.219.112:32037; H='Host: gitlab.devops.local'; PT='PRIVATE-TOKEN
 ```groovy
 pipeline {
   agent { label 'buildkit' }
-  options { disableConcurrentBuilds() }   // timestamper 插件没装就不要写 timestamps()
+  options {
+    disableConcurrentBuilds()
+    gitLabConnection('gitlab')
+  }
+  triggers { gitlab(triggerOnPush: true, triggerOnMergeRequest: false, branchFilterType: 'All', secretToken: 'gltok-demo-2026') }
   environment {
     HARBOR   = 'harbor.devops.local:32037'
     PROJECT  = 'demo'
@@ -119,22 +125,26 @@ pipeline {
   stages {
     stage('Build & Push (BuildKit)') {
       steps {
-        container('buildctl') {
-          sh '''
-            buildctl --addr "$BUILDKIT" build \\
-              --frontend dockerfile.v0 \\
-              --local context="$WORKSPACE" \\
-              --local dockerfile="$WORKSPACE" \\
-              --output "type=image,name=$HARBOR/$PROJECT/$APP:b$BUILD_NUMBER,push=true,registry.insecure=true" \\
-              --export-cache "type=registry,ref=$HARBOR/$PROJECT/cache:$APP" \\
-              --import-cache "type=registry,ref=$HARBOR/$PROJECT/cache:$APP"
-          '''
+        gitlabCommitStatus(name: 'build') {
+          container('buildctl') {
+            sh '''
+              buildctl --addr "$BUILDKIT" build \\
+                --frontend dockerfile.v0 \\
+                --local context="$WORKSPACE" \\
+                --local dockerfile="$WORKSPACE" \\
+                --output "type=image,name=$HARBOR/$PROJECT/$APP:b$BUILD_NUMBER,push=true,registry.insecure=true" \\
+                --export-cache "type=registry,ref=$HARBOR/$PROJECT/cache:$APP" \\
+                --import-cache "type=registry,ref=$HARBOR/$PROJECT/cache:$APP"
+            '''
+          }
         }
       }
     }
   }
 }
 ```
+
+> webhook 三件套（`gitLabConnection` / `triggers` / `gitlabCommitStatus`）的来龙去脉见 §六.4。提示：timestamper 插件没装就不要写 `timestamps()`。
 
 > 语法分层（Pipeline 只认 Groovy，无 YAML 选项）：本文件 99% 是**声明式 DSL**（`pipeline/agent/stages/steps` 结构化骨架，有限语法换编译期检查）；`sh '''…'''` 里是**纯 bash**，真正逻辑（buildctl 命令）全在这层；要变量运算/条件/循环才用 `script { … }` 逃生舱写原生 Groovy（本文未用）。选 Groovy 不选 YAML 是要图灵完备（凭据注入、循环、异常处理）；声明式 + sh 两层已覆盖绝大多数场景。
 
@@ -348,6 +358,93 @@ curl -s -u "admin:$PW" -b /tmp/cj.txt -H "$CRUMB" \
 > job 名必须与将来 webhook URL 路径一致（`/project/demo-app`）。Harbor 认证不进 Jenkins 凭据（走 K8s Secret + session）。
 > XML 释义：`CpsScmFlowDefinition` = Jenkinsfile 从 SCM 取（区别于把脚本贴 job 里）；`<lightweight>true</lightweight>` = 取脚本时只 fetch Jenkinsfile 单文件（controller 侧，日志开头 `Obtained Jenkinsfile from git …`）。代码全量 clone 不用它操心——声明式 pipeline 默认在用户 stage 前自动插 **"Declarative: Checkout SCM"** 隐式 stage（#5 日志实测：`Running on buildkit-…` 后紧跟 `Cloning … Checking out Revision deff894`），$WORKSPACE 因此拿全文件；要省掉得显式 `options { skipDefaultCheckout() }`。
 
+### 4. Webhook 自动触发（git push → build）
+
+补上 §〇 链路的第一环。顺序六步：**GitLab 放行内网回调 → Jenkins 存 PAT → 建全局 GitLab Connection → Jenkinsfile 声明 trigger → 跑一次注册 → GitLab 建 webhook**。
+
+**① GitLab 放行 local webhook**（10.6+ 默认禁内网地址）。UI：Admin → Settings → Network → Outbound requests → Allow requests to the local network from webhooks。走 API/自动化会踩连环坑（根因：/etc/gitlab 是 emptyDir，pod 重建后 gitlab-secrets.json 重新生成，DB 里旧加密列解不开）：
+
+```bash
+# PUT /application/settings → 500；rails update!/save! → OpenSSL::CipherError（加密属性解密失败）
+# 只能 update_columns 直写 + 删 Redis 缓存：
+kubectl --context devops -n gitlab exec gitlab-0 -c gitlab -- gitlab-rails runner '
+  ApplicationSetting.current.update_columns(allow_local_requests_from_web_hooks_and_services: true)
+  Rails.cache.delete("application_setting:current") rescue nil
+  puts ApplicationSetting.current.allow_local_requests_from_web_hooks_and_services'
+# → true
+```
+
+> 两个坑：`update!` 必炸 CipherError（走属性加密路径），`update_columns` 跳过校验直写 DB；写完 **Redis 里还有一份 marshal 的 `application_setting:current` 旧副本，不删缓存读出来还是 false**——极易误判"改了没生效"其实改成功了。
+
+**② Jenkins 存 PAT 凭据**（REST createCredentials 本环境 400 "This page expects a form submission"，换 scriptText 直插 SystemCredentialsProvider）：
+
+```groovy
+// scriptText：建 secret text 凭据 gitlab-api-token
+import com.cloudbees.plugins.credentials.domains.Domain
+import com.cloudbees.plugins.credentials.SystemCredentialsProvider
+import com.cloudbees.plugins.credentials.CredentialsScope
+import org.jenkinsci.plugins.plaincredentials.impl.StringCredentialsImpl
+import hudson.util.Secret
+def store = SystemCredentialsProvider.getInstance().getStore()
+if (store.getCredentials(Domain.global()).findAll { it.id == 'gitlab-api-token' }.isEmpty()) {
+  store.addCredentials(Domain.global(), new StringCredentialsImpl(CredentialsScope.GLOBAL,
+    'gitlab-api-token', 'GitLab root PAT (api)', Secret.fromString('glpat-xxx')))
+  return 'CREATED'
+}
+return 'EXISTS'
+```
+
+**③ 建全局 GitLab Connection**（`gitlabCommitStatus` 回报状态靠它调 GitLab API；名字 `gitlab` 必须与 Jenkinsfile `gitLabConnection('gitlab')` 一致）：
+
+```groovy
+import jenkins.model.Jenkins
+import com.dabsquared.gitlabjenkins.connection.GitLabConnectionConfig
+import com.dabsquared.gitlabjenkins.connection.GitLabConnection
+def d = Jenkins.get().getDescriptorByType(GitLabConnectionConfig)
+d.setConnections([new GitLabConnection('gitlab', 'http://gitlab.devops.local:32037', 'gitlab-api-token', false, 10, 10)])
+d.save()
+return d.getConnections().collect { it.name + ' -> ' + it.url + ' (token ' + it.apiTokenId + ')' }.join('; ')
+// → gitlab -> http://gitlab.devops.local:32037 (token gitlab-api-token)
+```
+
+连接活性验证（也是排障手法）：scriptText 里走插件**生产路径**取 client，能拿到 currentUser 即全链路通：
+
+```groovy
+def run = Jenkins.get().getItemByFullName('demo-app').getBuildByNumber(8)
+def client = com.dabsquared.gitlabjenkins.connection.GitLabConnectionProperty.getClient(run)
+return client.getCurrentUser().username   // → root
+```
+
+**④ Jenkinsfile 三件套**（完整文件见 §二）：`options { gitLabConnection('gitlab') }` 选连接；`triggers { gitlab(triggerOnPush: true, triggerOnMergeRequest: false, branchFilterType: 'All', secretToken: 'gltok-demo-2026') }` 声明触发；`gitlabCommitStatus(name: 'build')` 包住构建步骤回报状态。
+
+**⑤ 跑一次 job 注册 trigger**：声明式 `triggers{}` 改完必须**手动跑一次**才写进 job config.xml（出现 `<com.dabsquared.gitlabjenkins.GitLabPushTrigger>` + 加密 `<secretToken>{AQAA…}`），光提交 Jenkinsfile 不生效。
+
+**⑥ GitLab 建 webhook**（URL 必须是 `/project/<job 名>`，token 与 trigger 的 secretToken 一致）：
+
+```bash
+curl -s -X POST -H "PRIVATE-TOKEN: glpat-xxx" -H "Host: gitlab.devops.local" \
+  -H "Content-Type: application/json" \
+  http://123.58.219.112:32037/api/v4/projects/2/hooks \
+  -d '{"url":"http://jenkins.devops.local:32037/project/demo-app","token":"gltok-demo-2026","push_events":true,"enable_ssl_verification":false}'
+# 改 token：PUT /projects/2/hooks/1；投递记录：GET /projects/2/hooks/1/events（状态字段叫 response_status，不是 status）
+```
+
+**⑦ 端到端验证**：push 一个真实提交（本例 v3 改 index.html）→ Jenkins 自动排 build #8，构建原因 `Started by GitLab push by Administrator`；commit 状态回报：
+
+```bash
+# ⚠️ 坑：statuses 用短 SHA / 分支名查询会【静默返回 []】（POST 却收短 SHA）——必须完整 40 位 SHA
+SHA=$(curl -s -H "PRIVATE-TOKEN: glpat-xxx" -H "Host: gitlab.devops.local" \
+  http://123.58.219.112:32037/api/v4/projects/2/repository/commits/main \
+  | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
+curl -s -H "PRIVATE-TOKEN: glpat-xxx" -H "Host: gitlab.devops.local" \
+  http://123.58.219.112:32037/api/v4/projects/2/repository/commits/$SHA/statuses
+# → [{"name":"build","status":"success","ref":"main","target_url":"http://jenkins.devops.local:32037/job/demo-app/8/…",…}]
+```
+
+> 再补两个坑：
+> - **webhook 403 `anonymous is missing the Job/Build permission`**：gitlab-plugin 1.2154 给 `/project` 端点上了强制鉴权——webhook 没带 token（或与 trigger `secretToken` 不一致）即 403，与 Jenkins 全局授权无关，别去调。
+> - **target_url 缺端口**：Jenkins root URL 默认 `http://jenkins.devops.local/`（无 :32037）→ GitLab 上的状态链接点不回去。scriptText：`JenkinsLocationConfiguration.get().setUrl('http://jenkins.devops.local:32037/'); JenkinsLocationConfiguration.get().save()`。
+
 ---
 
 ## 七、触发构建 + 端到端验证
@@ -378,10 +475,10 @@ curl -s -u "admin:$PW" "$J/job/demo-app/1/consoleText"
 ```bash
 curl -s -u admin:Harbor12345 -H "Host: harbor.devops.local" \
   'http://123.58.219.112:32037/api/v2.0/projects/demo/repositories/demo-app/artifacts?page_size=10' \
-  | python3 -m json.tool   # b3/b4/b5 挂同一 digest；再跑一次构建应看到 CACHED
+  | python3 -m json.tool   # #3-#6 同 digest（缓存全中）；#7/#8 因 index.html 改版产出新 digest
 ```
 
-本环境 5 次构建实录（排障过程本身就是教材）：
+本环境 8 次构建实录（排障过程本身就是教材）：
 
 | 构建 | 结果 | 教训 |
 |---|---|---|
@@ -390,6 +487,9 @@ curl -s -u admin:Harbor12345 -H "Host: harbor.devops.local" \
 | #3 | ✅ push b3 | session 认证通（`[auth] … token`） |
 | #4 | ✅ push b4，`#9 CACHED` | registry 缓存命中 |
 | #5 | ✅ push b5（验证代理复核跑的） | 可复现性独立确认 |
+| #6 | ✅ 手动 | 首版 trigger（无 secretToken）注册——webhook 推送仍 403；index.html 未动 → 缓存全中，digest 同 b3 |
+| #7 | ✅ 手动 | secretToken 版 trigger 注册；index.html v2 → 新 digest `3194fa5a` |
+| #8 | ✅ **git push 自动触发** | GitLabWebHookCause（`Started by GitLab push by Administrator`）；index.html v3 → digest `001df844`；commit status `build`=success 回报 GitLab（§六.4） |
 
 ## 八、故障速查（本流程踩过的全在这）
 
@@ -403,9 +503,15 @@ curl -s -u admin:Harbor12345 -H "Host: harbor.devops.local" \
 | secretVolume 挂载名/路径颠倒 | 构造参数顺序就是 `(mountPath, secretName)`；挂完 Groovy `getVolumes().toString()` 验 |
 | kaniko 类方案 `unauthorized` 且密码没错 | Secret key 不是 `config.json`；或用户名没带 `robot$demo+` 前缀 |
 | Jenkins REST 403 No valid crumb | crumb 绑定会话：`curl -c` 存 cookie 再 `-b` 带上 |
+| GitLab webhook 投递 403 `anonymous is missing the Job/Build permission` | gitlab-plugin 1.2154 `/project` 端点强制鉴权：trigger 配 `secretToken` + webhook 带同值 token；改 trigger 后必须手动跑一次 job 重新注册 |
+| GitLab 设置改完"没生效"（读回来还是 false） | Redis 缓存了 marshal 的 `application_setting:current` 旧副本 → `Rails.cache.delete` 后再验（改法本身用 `update_columns`，见 §六.4） |
+| rails 改设置报 `OpenSSL::CipherError` | /etc/gitlab 是 emptyDir，pod 重建后 secrets 重新生成，DB 旧加密列解不开 → `update_columns` 直写绕过加密列 |
+| Jenkins createCredentials 400 `This page expects a form submission` | 换 scriptText + SystemCredentialsProvider 直插（§六.4 ②） |
+| statuses API 查 commit 状态返回 `[]` | 短 SHA / 分支名静默返回空，必须完整 40 位 SHA（POST 却收短 SHA） |
+| curl 带 `tree=...actions[xxx]` 静默无输出 | curl 把 `[]` 当 URL glob range，`-s` 吞错 → 方括号编码 `%5B%5D` 或加 `--globoff` |
 
 ## 九、尚未实施（要补的路）
 
-- **GitLab webhook 自动触发**：demo-app → Settings → Webhooks → `http://jenkins.devops.local:32037/project/demo-app`（Push events）+ Jenkins job 勾 GitLab trigger（见《流水线部署步骤.md》第五步.5）
 - **部署段（prod）**：`prod-kubeconfig` 凭据 + `set image` 滚动发布 + prod 节点 containerd http 拉取配置（见《流水线部署步骤.md》第四步）
 - Harbor Trivy 扫描、tag 规则、垃圾回收
+- MR 触发（`triggerOnMergeRequest: true`）与分支过滤（`branchFilterType`）——当前只开了 push 全分支
