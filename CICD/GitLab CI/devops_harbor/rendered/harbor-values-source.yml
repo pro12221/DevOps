@@ -1,0 +1,91 @@
+# Harbor（官方 Helm chart）—— POC 验证环境
+# chart: harbor/harbor 1.19.2 (Harbor 2.15.2)
+# 安装：helm upgrade --install harbor -n devops -f values.yml harbor/harbor --version 1.19.2
+#
+# 设计取舍（与 GitLab/Jenkins 保持一致）：
+#   1) 组件只暴露一个 ClusterIP Service（内层 nginx），对外由手写的
+#      HTTPRoute (route.yml) 经 istio Gateway 承接，和 gitlab/jenkins 同构；
+#      chart 自带的 expose.type=route / ingress 都不用，避免两套入口定义打架。
+#   2) 存储统一走 UDisk CSI 的 ssd-csi-udisk，不用集群里没有的 local-path。
+#   3) 全部组件单副本 + 关掉不需要的东西，压住内存占用（节点 8C16G）。
+
+# ---- 对外访问方式：只发一个 ClusterIP Service，名字 harbor，端口 80 ----
+expose:
+  type: clusterIP
+  tls:
+    # 入口在 istio Gateway 上，TLS 由后续证书层处理；这里走明文 HTTP
+    enabled: false
+  clusterIP:
+    name: harbor
+    ports:
+      httpPort: 80
+
+# 镜像/跳转里用到的地址；必须和 route.yml 的 hostname 一致，
+# 否则 portal 拉取的镜像地址、docker login 提示会指向错误的域名
+externalURL: http://harbor.devops.local
+
+# ---- 持久化：全部 ssd-csi-udisk ----
+persistence:
+  enabled: true
+  # helm uninstall 时保留 PVC，避免误删镜像数据；要清干净再手动 kubectl delete pvc
+  resourcePolicy: "keep"
+  imageChartStorage:
+    type: filesystem
+    filesystem:
+      rootDirectory: /storage
+  persistentVolumeClaim:
+    registry:
+      storageClass: "ssd-csi-udisk"
+      size: 100Gi
+      accessMode: ReadWriteOnce
+    jobservice:
+      jobLog:
+        storageClass: "ssd-csi-udisk"
+        size: 1Gi
+        accessMode: ReadWriteOnce
+    database:
+      storageClass: "ssd-csi-udisk"
+      size: 10Gi
+      accessMode: ReadWriteOnce
+    redis:
+      storageClass: "ssd-csi-udisk"
+      size: 5Gi
+      accessMode: ReadWriteOnce
+    trivy:
+      storageClass: "ssd-csi-udisk"
+      size: 10Gi
+      accessMode: ReadWriteOnce
+
+# ---- 组件副本数：POC 全部单副本 ----
+nginx:
+  replicas: 1
+portal:
+  replicas: 1
+core:
+  replicas: 1
+jobservice:
+  replicas: 1
+registry:
+  replicas: 1
+trivy:
+  # 漏洞扫描；POC 保留，如果嫌占资源可以 set trivy.enabled=false
+  enabled: true
+  replicas: 1
+exporter:
+  # 空转键：exporter 的 Deployment 由顶层 metrics.enabled 控制，chart 默认 false，
+  # 所以集群里并没有 harbor-exporter 工作负载，这里的 replicas 当前不生效。
+  # 将来要采集指标，得先 set metrics.enabled=true 这行才有意义。
+  replicas: 1
+
+# 内置 postgresql / redis 子 chart（不走外部实例）
+database:
+  type: internal
+redis:
+  type: internal
+
+# 组件之间走明文，不开内部 mTLS（省一套证书生成/轮换）
+internalTLS:
+  enabled: false
+
+# Harbor 管理员初始密码；仅首次安装写入，之后改密码要在 portal 里改
+harborAdminPassword: "Harbor12345"

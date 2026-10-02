@@ -1,0 +1,27 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: harbor
+  namespace: devops
+spec:
+  parentRefs:
+    # 跨命名空间引用 istio-system 里的 Gateway（公网入口 EIP 152.32.130.53）
+    # 与 gitlab / jenkins 共用同一个 Gateway，靠 hostname 区分
+    - name: istio-gateway
+      namespace: istio-system
+      kind: Gateway
+      group: gateway.networking.k8s.io
+  hostnames:
+    - harbor.devops.local
+  rules:
+    # Harbor 的 API(v2) 走与其他路径同一条 nginx Service；
+    # 具体路由细分由 Harbor 内层 nginx 自己按 path 转发到 core/portal/registry
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        # helm chart 里 expose.type=clusterIP 生成的 Service 名字是 harbor，
+        # 端口 80 -> targetPort 8080（内层 nginx）。改名了这里要同步改。
+        - name: harbor
+          port: 80

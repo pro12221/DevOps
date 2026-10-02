@@ -1,0 +1,13 @@
+# 存储：UK8S 内置 UDisk CSI 动态供给，只写 PVC，不需要 StorageClass / PV
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jenkins-pv-claim
+  namespace: devops
+spec:
+  storageClassName: ssd-csi-udisk     # sata-csi-udisk 更便宜 / csi-udisk-rssd 更高 IOPS
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi                   # UDisk 最小 10Gi，按 10Gi 递增

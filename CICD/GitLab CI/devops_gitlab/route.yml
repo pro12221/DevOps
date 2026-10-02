@@ -1,0 +1,22 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: gitlab
+  namespace: devops
+spec:
+  parentRefs:
+    # 跨命名空间引用 istio-system 里的 Gateway（公网入口 EIP 152.32.130.53）
+    - name: istio-gateway
+      namespace: istio-system
+      kind: Gateway
+      group: gateway.networking.k8s.io
+  hostnames:
+    - gitlab.devops.local
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: gitlab
+          port: 80

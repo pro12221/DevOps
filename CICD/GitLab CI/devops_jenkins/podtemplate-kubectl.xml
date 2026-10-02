@@ -1,0 +1,163 @@
+<!--
+  Jenkins 全局 Kubernetes Cloud 的 <clouds> 配置块 —— 相对现状只加了一个 kubectl 容器。
+
+  背景：CD 段要跑 `kubectl set image`，但 podTemplate `buildkitd-agent` 只有
+  jnlp 和 buildkitd 两个容器，两者都不带 kubectl。所以给 podTemplate 补一个
+  kubectl 容器（alpine/k8s 自带 kubectl），Jenkinsfile 里就能 container('kubectl')。
+
+  serviceAccount 在 pod 模板上是 jenkins-admin，pod 内所有容器共用这份 SA token，
+  所以 kubectl 容器直接继承 cd-rbac.yml 授的权限，不用另外配。
+
+  应用方式（二选一）：
+    a) Jenkins → Manage Jenkins → Clouds → 编辑 podTemplate，UI 里加一个容器；
+    b) 直接改 /var/jenkins_home/config.xml 的同名 <clouds> 块，然后
+       「Manage Jenkins → Reload Configuration from Disk」（或重启 Jenkins）。
+  该 podTemplate 的 <showRawYaml> 为 true，Jenkins 里能看到合并后的最终 Pod YAML，
+  改完对着看一眼容器列表确认生效。
+
+  注意：<serverCertificate> 是集群 CA，随集群重装/换 CA 会变，本文件只作存档参考，
+  真正生效的是 Jenkins 里那份。
+-->
+  <clouds>
+    <org.csanchez.jenkins.plugins.kubernetes.KubernetesCloud plugin="kubernetes@4557.ve746270f672f">
+      <actions/>
+      <name>k8s</name>
+      <templates>
+        <org.csanchez.jenkins.plugins.kubernetes.PodTemplate>
+          <id>13c9e73d-9a4c-4bd5-9036-fdaa5a8e6a9c</id>
+          <name>buildkitd-agent</name>
+          <namespace>devops</namespace>
+          <privileged>false</privileged>
+          <runAsUser>1000</runAsUser>
+          <capOnlyOnAlivePods>false</capOnlyOnAlivePods>
+          <alwaysPullImage>false</alwaysPullImage>
+          <instanceCap>2147483647</instanceCap>
+          <slaveConnectTimeout>1000</slaveConnectTimeout>
+          <idleMinutes>0</idleMinutes>
+          <activeDeadlineSeconds>0</activeDeadlineSeconds>
+          <label>buildkitd-agent</label>
+          <serviceAccount>jenkins-admin</serviceAccount>
+          <nodeUsageMode>NORMAL</nodeUsageMode>
+          <hostNetwork>false</hostNetwork>
+          <volumes>
+            <org.csanchez.jenkins.plugins.kubernetes.volumes.SecretVolume>
+              <mountPath>/home/user/.docker</mountPath>
+              <secretName>harbor-push-config</secretName>
+            </org.csanchez.jenkins.plugins.kubernetes.volumes.SecretVolume>
+          </volumes>
+          <containers>
+            <org.csanchez.jenkins.plugins.kubernetes.ContainerTemplate>
+              <name>buildkitd</name>
+              <image>moby/buildkit:v0.33.0-rootless</image>
+              <privileged>false</privileged>
+              <runAsUser>1000</runAsUser>
+              <alwaysPullImage>false</alwaysPullImage>
+              <workingDir>/home/jenkins/agent</workingDir>
+              <command>sleep</command>
+              <args>9999999</args>
+              <ttyEnabled>true</ttyEnabled>
+              <resourceRequestCpu></resourceRequestCpu>
+              <resourceRequestMemory></resourceRequestMemory>
+              <resourceRequestEphemeralStorage></resourceRequestEphemeralStorage>
+              <resourceLimitCpu></resourceLimitCpu>
+              <resourceLimitMemory></resourceLimitMemory>
+              <resourceLimitEphemeralStorage></resourceLimitEphemeralStorage>
+              <envVars/>
+              <ports/>
+              <livenessProbe>
+                <execArgs></execArgs>
+                <timeoutSeconds>0</timeoutSeconds>
+                <initialDelaySeconds>0</initialDelaySeconds>
+                <failureThreshold>0</failureThreshold>
+                <periodSeconds>0</periodSeconds>
+                <successThreshold>0</successThreshold>
+              </livenessProbe>
+            </org.csanchez.jenkins.plugins.kubernetes.ContainerTemplate>
+            <org.csanchez.jenkins.plugins.kubernetes.ContainerTemplate>
+              <name>kubectl</name>
+              <image>alpine/k8s:1.34.12</image>
+              <privileged>false</privileged>
+              <runAsUser>1000</runAsUser>
+              <alwaysPullImage>false</alwaysPullImage>
+              <workingDir>/home/jenkins/agent</workingDir>
+              <command>sleep</command>
+              <args>9999999</args>
+              <ttyEnabled>true</ttyEnabled>
+              <resourceRequestCpu></resourceRequestCpu>
+              <resourceRequestMemory></resourceRequestMemory>
+              <resourceRequestEphemeralStorage></resourceRequestEphemeralStorage>
+              <resourceLimitCpu></resourceLimitCpu>
+              <resourceLimitMemory></resourceLimitMemory>
+              <resourceLimitEphemeralStorage></resourceLimitEphemeralStorage>
+              <envVars/>
+              <ports/>
+              <livenessProbe>
+                <execArgs></execArgs>
+                <timeoutSeconds>0</timeoutSeconds>
+                <initialDelaySeconds>0</initialDelaySeconds>
+                <failureThreshold>0</failureThreshold>
+                <periodSeconds>0</periodSeconds>
+                <successThreshold>0</successThreshold>
+              </livenessProbe>
+            </org.csanchez.jenkins.plugins.kubernetes.ContainerTemplate>
+          </containers>
+          <envVars/>
+          <annotations/>
+          <imagePullSecrets/>
+          <nodeProperties/>
+          <agentContainer>jnlp</agentContainer>
+          <agentInjection>true</agentInjection>
+          <yamlMergeStrategy class="org.csanchez.jenkins.plugins.kubernetes.pod.yaml.Overrides"/>
+          <inheritYamlMergeStrategy>false</inheritYamlMergeStrategy>
+          <showRawYaml>true</showRawYaml>
+          <podRetention class="org.csanchez.jenkins.plugins.kubernetes.pod.retention.Never"/>
+        </org.csanchez.jenkins.plugins.kubernetes.PodTemplate>
+      </templates>
+      <serverUrl>https://kubernetes.default.svc</serverUrl>
+      <useJenkinsProxy>false</useJenkinsProxy>
+      <serverCertificate>-----BEGIN CERTIFICATE-----
+MIIDwDCCAqigAwIBAgIUTKRdzYzIJWhp4xgBgSUNBHOpYJowDQYJKoZIhvcNAQEL
+BQAwZTELMAkGA1UEBhMCQ04xEDAOBgNVBAgTB0JlaUppbmcxEDAOBgNVBAcTB0Jl
+aUppbmcxDDAKBgNVBAoTA2s4czEPMA0GA1UECxMGU3lzdGVtMRMwEQYDVQQDEwpr
+dWJlcm5ldGVzMCAXDTI2MDkzMDA3MTEwMFoYDzIwNzYwOTE3MDcxMTAwWjBlMQsw
+CQYDVQQGEwJDTjEQMA4GA1UECBMHQmVpSmluZzEQMA4GA1UEBxMHQmVpSmluZzEM
+MAoGA1UEChMDazhzMQ8wDQYDVQQLEwZTeXN0ZW0xEzARBgNVBAMTCmt1YmVybmV0
+ZXMwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDhGCbR8D1TN/GoDVuB
+PbZ4QFiJ2D+yUp3WQcCuDkpaZliidIUm1H02lbiZkyabiyq2rl5gWw0xoZSyLQgb
+nmaSNgsTQh7LVcyGnC0ene3IYGwAi/J1O18v1xWifuwzAEZptDkqNp/cye/6Urkc
+JzTDwyYTTIDpmxZTK7m4pHhzI2U0Kej5jyz3YoJ6nYr2riu3/F1HivqrfkGvetXP
+kaCSSSoKNhPMnDfbz/1dIMjxUBz1JkyXzn8z/1/pEqmRqZ7iJF0DSFQH88+B/QtE
+wOCWO+Gaw4Uo6C8ZBIrNX2FDDVPO8k+upXDBRrr8c/PIOpsC0ko3YeLXmclMHu5F
+1Yl3AgMBAAGjZjBkMA4GA1UdDwEB/wQEAwIBBjASBgNVHRMBAf8ECDAGAQH/AgEC
+MB0GA1UdDgQWBBRWWt5xxP5l3tMPgGEz/HxGRXWrfzAfBgNVHSMEGDAWgBRWWt5x
+xP5l3tMPgGEz/HxGRXWrfzANBgkqhkiG9w0BAQsFAAOCAQEAQvQGESmO8g+45Ii4
+bAAqf/+HyU9V3u5fvwFI1nsfsMtwU31fTAZTh7/cM+2u1IhZO7Csw9dQ2nJwMLVH
+Uv6QmumPbSnrLtV6HmKN4UIXAJxnd2+X3Jvq8anAdaSYnV4NzUXxU8ZzR2QIViM5
+hcxYswbL6PGwoe9VLCwj02B0qRAj6wePReU6u1F6bwvBhXayz/cNGoELUz6XbT1I
+gMl1M5fVLzngc0Qj632CP8323DhfDEIB9DkDvW1pjt0tGqPZ7PZwuhhQWr1r7EIS
++MM+9kw+VmHK1TcryzG+VBcZHR/85i0ctTdWLYeg290nqNfBXyF2lQbeqOqAlwOJ
+KkaFWQ==
+-----END CERTIFICATE-----</serverCertificate>
+      <skipTlsVerify>false</skipTlsVerify>
+      <addMasterProxyEnvVars>false</addMasterProxyEnvVars>
+      <capOnlyOnAlivePods>false</capOnlyOnAlivePods>
+      <namespace>devops</namespace>
+      <restrictedPssSecurityContext>false</restrictedPssSecurityContext>
+      <webSocket>false</webSocket>
+      <directConnection>false</directConnection>
+      <jenkinsUrl>http://jenkins-service.devops.svc.cluster.local:8080/</jenkinsUrl>
+      <jenkinsTunnel>jenkins-service.devops.svc.cluster.local:50000</jenkinsTunnel>
+      <credentialsId>d79a2d28-18b9-4736-9a72-e269cefb6879</credentialsId>
+      <containerCap>10</containerCap>
+      <retentionTimeout>5</retentionTimeout>
+      <connectTimeout>5</connectTimeout>
+      <readTimeout>15</readTimeout>
+      <podLabels/>
+      <usageRestricted>false</usageRestricted>
+      <maxRequestsPerHost>32</maxRequestsPerHost>
+      <waitForPodSec>600</waitForPodSec>
+      <podRetention class="org.csanchez.jenkins.plugins.kubernetes.pod.retention.Never"/>
+      <activeContainers>false</activeContainers>
+      <traits/>
+    </org.csanchez.jenkins.plugins.kubernetes.KubernetesCloud>
+  </clouds>

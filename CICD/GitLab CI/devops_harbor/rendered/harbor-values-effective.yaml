@@ -1,0 +1,61 @@
+USER-SUPPLIED VALUES:
+core:
+  replicas: 1
+database:
+  type: internal
+exporter:
+  replicas: 1
+expose:
+  clusterIP:
+    name: harbor
+    ports:
+      httpPort: 80
+  tls:
+    enabled: false
+  type: clusterIP
+externalURL: http://harbor.devops.local
+harborAdminPassword: Harbor12345
+internalTLS:
+  enabled: false
+jobservice:
+  replicas: 1
+nginx:
+  replicas: 1
+persistence:
+  enabled: true
+  imageChartStorage:
+    filesystem:
+      rootDirectory: /storage
+    type: filesystem
+  persistentVolumeClaim:
+    database:
+      accessMode: ReadWriteOnce
+      size: 10Gi
+      storageClass: ssd-csi-udisk
+    jobservice:
+      jobLog:
+        accessMode: ReadWriteOnce
+        size: 1Gi
+        storageClass: ssd-csi-udisk
+    redis:
+      accessMode: ReadWriteOnce
+      size: 5Gi
+      storageClass: ssd-csi-udisk
+    registry:
+      accessMode: ReadWriteOnce
+      size: 100Gi
+      storageClass: ssd-csi-udisk
+    trivy:
+      accessMode: ReadWriteOnce
+      size: 10Gi
+      storageClass: ssd-csi-udisk
+  resourcePolicy: keep
+portal:
+  replicas: 1
+redis:
+  type: internal
+registry:
+  replicas: 1
+trivy:
+  enabled: true
+  replicas: 1

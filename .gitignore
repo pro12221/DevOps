@@ -6,3 +6,6 @@ Observable/VictoriaMetrics/大规模虚拟化监控/bin/*.tar.gz
 # Python caches
 __pycache__/
 *.py[cod]
+
+# Separate repo checkout of the demo app (has its own remote: gitlab.devops.local/root/test)
+CICD/GitLab CI/test/

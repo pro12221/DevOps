@@ -1,0 +1,14 @@
+# GitLab 数据盘：UK8S 托管集群没有 local-path，用 CSI UDisk 动态供给
+# /etc/gitlab、/var/opt/gitlab、/var/log/gitlab 三个目录以 subPath 挂到同一块盘
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: gitlab-data
+  namespace: devops
+spec:
+  accessModes:
+    - ReadWriteOnce          # ssd-csi-udisk 只支持 RWO
+  storageClassName: ssd-csi-udisk
+  resources:
+    requests:
+      storage: 100Gi

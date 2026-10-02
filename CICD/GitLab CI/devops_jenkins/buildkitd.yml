@@ -1,0 +1,117 @@
+# BuildKit 构建农场：rootless buildkitd 常驻（ns devops · 端口 1234）
+# 用途：Jenkins Pipeline 里 buildctl 通过 tcp://buildkitd:1234 发构建请求，构建在常驻 worker 内完成
+# 认证：harbor-push-config（generic secret，key 必须是 config.json）挂 /home/user/.docker ——
+#       常驻 daemon 只有这一处用到凭据：自己拉 Harbor 私有基础镜像（如 FROM harbor...）。
+#       流水线 push 的凭据不来自这里：buildkit 走「客户端凭据经 session 转发」，
+#       发起 buildctl 的 agent pod 挂同一个 secret（配在 Jenkins podTemplate 的 secretVolume）。
+#       secret 若不存在 pod 也起得来（optional），只是拉私有镜像/push 会 401
+# Harbor 无 TLS：buildkitd.toml [registry] http=true 管常驻端的拉取/缓存导入导出；
+#       推送时在 buildctl 的 --output 里再补 registry.insecure=true
+# rootless 三要素：rootless 镜像(UID 1000) + seccompProfile Unconfined（要建嵌套 user namespace）
+#       + --oci-worker-no-process-sandbox
+# 为什么不用 Jenkins 动态 agent 跑 buildkit：ContainerTemplate 无法表达 seccompProfile /
+#       AppArmor / 缓存目录属主，只能走 PodTemplate 的 yaml 逃生口，维护成本高 → 常驻更省事
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: buildkitd-config
+  namespace: devops
+data:
+  buildkitd.toml: |
+    debug = false
+    # key 要跟镜像名里用的 host 完全一致；Harbor 走 ClusterIP Service(harbor:80)，
+    # 名字由 CoreDNS rewrite 解析，所以这里不带端口。
+    [registry."harbor.devops.local"]
+      http = true
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: buildkit-cache
+  namespace: devops
+spec:
+  storageClassName: ssd-csi-udisk     # sata-csi-udisk 更便宜 / csi-udisk-rssd 更高 IOPS
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi                   # UDisk 最小 10Gi，按 10Gi 递增；构建缓存单独占一块
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: buildkitd
+  namespace: devops
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: buildkitd
+  template:
+    metadata:
+      labels:
+        app: buildkitd
+    spec:
+      # pod 级 fsGroup/runAsUser 让 UDisk CSI 卷内目录属主落到 1000，
+      # rootless(UID 1000) 才能写缓存目录 —— 不需要再起 initContainer 去 chown
+      securityContext:
+            fsGroup: 1000
+            runAsUser: 1000
+      containers:
+        - name: buildkitd
+          image: moby/buildkit:v0.33.0-rootless
+          args:
+            - --addr
+            - tcp://0.0.0.0:1234
+            - --config
+            - /etc/buildkit/buildkitd.toml
+            - --oci-worker-no-process-sandbox
+          securityContext:
+            # rootlesskit 需要建嵌套 user namespace，默认 seccomp 会拦；AppArmor 同理
+            # （containerd 2.x 起默认套 cri-containerd.apparmor.d 会禁 mount 系统调用）
+            # k8s ≥1.30 用稳定字段；旧写法 container.apparmor.security.beta.kubernetes.io/... 已废弃
+            seccompProfile:
+              type: Unconfined
+            appArmorProfile:
+              type: Unconfined
+          readinessProbe:
+            exec:
+              command: ["buildctl", "--addr", "tcp://127.0.0.1:1234", "debug", "workers"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+          volumeMounts:
+            - name: cache
+              mountPath: /home/user/.local/share/buildkit
+            - name: config
+              mountPath: /etc/buildkit
+            - name: docker-auth
+              mountPath: /home/user/.docker
+      volumes:
+        - name: cache
+          persistentVolumeClaim:
+            claimName: buildkit-cache
+        - name: config
+          configMap:
+            name: buildkitd-config
+        - name: docker-auth
+          secret:
+            secretName: harbor-push-config
+            optional: true            # 建 secret 前 pod 也能起；不 push 私有仓库就不需要
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: buildkitd
+  namespace: devops
+spec:
+  selector:
+    app: buildkitd
+  ports:
+    - name: buildkit
+      port: 1234
+      targetPort: 1234

@@ -1,0 +1,176 @@
+# 节点侧两件套修复：让 kubelet/containerd 能拉 harbor.devops.local 的镜像
+#
+# 为什么需要它：Jenkins 的 CD 段是 `kubectl set image`，改的是 Deployment。
+# 真正把镜像拉下来的是**节点上的 kubelet/containerd**，不是 Jenkins、也不走
+# 集群内 CoreDNS。所以光在 Jenkins 侧把域名解析通没用 —— 节点自己得能解析、
+# 且 containerd 得知道该 host 走 http。
+#
+# 两个修复点：
+#  1) /etc/resolv.conf 指向 UCloud 私有 DNS 的专有解析器 100.90.90.90/.100
+#     （harbor.devops.local 的 A 记录建在 UDNS 私有 zone 里，见下）
+#  2) containerd 的 certs.d/<host>/hosts.toml 声明 http:// + 端点 IP，
+#     并开 config_path（Harbor 无 TLS，只走 http）
+#
+# 踩坑（本环境实测）：
+#  - UK8S 镜像上 /etc/resolv.conf 是 **软链** -> /run/systemd/resolve/resolv.conf，
+#    由 systemd-resolved 托管。直接往里写 = 改 resolved 的动态文件，重启/网络变化
+#    就被覆盖 —— 必须 `rm -f` 软链、落成静态文件。nsswitch.conf 是 `hosts: files dns`，
+#    静态文件对 glibc 就是权威来源。
+#  - Harbor 返回 401 时带 `Www-Authenticate: Bearer realm="http://harbor.devops.local/..."`，
+#    containerd 要去解析 realm 里的**同一个 host**。所以只加 certs.d 的 http 例外不够，
+#    DNS 那一半必须一起修，否则 token 端点解析不了 → 仍然 401。
+#  - `crictl pull` 若镜像已缓存会返回 "Image is up to date"，**什么都没验证到**。
+#    验证前先 `crictl rmi` 掉，再拉，看真实的层下载字节数。
+#
+# 为什么用 DaemonSet 而不是逐台上机：三台 worker 同样的操作，声明式 + 幂等
+# （写文件前 cmp 比对，未变就不重启 containerd）。重启 containerd **不会杀已有容器**，
+# 只是短暂中断运行时，但仍不该三台一起抖 —— 兜底靠的是上面的 cmp 幂等，不是 maxUnavailable。
+# （maxUnavailable 只在滚动更新一个**已在运行**的 DS 模板时限制同时下线的 Pod 数；
+#   本次用法是 delete 后重新 apply，属新建，控制器会给三台节点一次性各建一个 Pod。）
+#
+# 执行完日志里应出现：DURABLE_OK（resolved 重启后静态 resolv.conf 还在）
+# 和 PULL_OK(crictl)。看完日志即可 `kubectl delete ds node-registry-fix` ——
+# 配置已落盘，DS 幂等，需要时再 apply 即可复现/巡检。
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-registry-fix
+  namespace: devops
+  labels: {app: node-registry-fix}
+spec:
+  selector:
+    matchLabels: {app: node-registry-fix}
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate: {maxUnavailable: 1}   # 仅约束「更新已在运行的 DS」；首次 apply 三台同时起 Pod
+  template:
+    metadata:
+      labels: {app: node-registry-fix}
+    spec:
+      # 无 tolerations ⇒ 只调度到 3 台未打污点的 worker（master 有 NoSchedule）。
+      # 需要连 master 一起修时再补 tolerations。
+      hostPID: true                        # nsenter -t 1 需要看到宿主 PID 空间
+      restartPolicy: Always                # DaemonSet 强制 Always
+      terminationGracePeriodSeconds: 5
+      containers:
+      - name: fix
+        image: alpine:3.20
+        command: ["/bin/sh", "-c"]
+        args:
+        - |
+          apk add --no-cache util-linux >/dev/null 2>&1
+          # 进宿主机的 mount/uts/ipc/net/pid 命名空间，等于直接在节点上操作
+          nsenter -t 1 -m -u -i -n -p -- /bin/bash -s <<"OUTER"
+          set -uo pipefail
+          echo "===== node $(hostname) ====="
+          echo "--- before: resolv.conf ---"
+          ls -l /etc/resolv.conf
+          cat /etc/resolv.conf
+          echo "netplan: $(ls /etc/netplan/ 2>/dev/null | tr '\n' ' ')"
+          echo "systemd-resolved: $(systemctl is-enabled systemd-resolved 2>&1) / $(systemctl is-active systemd-resolved 2>&1)"
+          if command -v nscd >/dev/null; then echo "nscd: $(systemctl is-active nscd)"; else echo "nscd: absent"; fi
+          echo "--- containerd config ---"
+          ls -l /etc/containerd/config.toml
+          grep -n "imports\|^version" /etc/containerd/config.toml || true
+          ls -l /etc/containerd/conf.d/ 2>&1 || echo "conf.d absent"
+
+          CHANGED=0
+
+          # (1) containerd：harbor.devops.local 走 http，并指向真实端点 IP
+          mkdir -p /etc/containerd/certs.d/harbor.devops.local
+          cat > /tmp/hosts.toml.new <<'EOF'
+          server = "http://harbor.devops.local"
+
+          [host."http://172.20.57.91"]
+            capabilities = ["pull", "resolve", "push"]
+            skip_verify = true
+          EOF
+          if cmp -s /tmp/hosts.toml.new /etc/containerd/certs.d/harbor.devops.local/hosts.toml; then
+            echo "certs.d hosts.toml unchanged"
+          else
+            mv /tmp/hosts.toml.new /etc/containerd/certs.d/harbor.devops.local/hosts.toml
+            CHANGED=1
+            echo "wrote certs.d/harbor.devops.local/hosts.toml"
+          fi
+
+          # 打开 config_path（UK8S 的 config.toml 是 version=3 + imports=/etc/containerd/conf.d/*.toml，
+          # 所以放 conf.d 下作为 drop-in，不要去改主文件）
+          mkdir -p /etc/containerd/conf.d
+          cat > /tmp/20-harbor.toml.new <<'EOF'
+          version = 3
+
+          [plugins.'io.containerd.cri.v1.images'.registry]
+            config_path = "/etc/containerd/certs.d"
+          EOF
+          if cmp -s /tmp/20-harbor.toml.new /etc/containerd/conf.d/20-harbor.toml; then
+            echo "conf.d drop-in unchanged"
+          else
+            mv /tmp/20-harbor.toml.new /etc/containerd/conf.d/20-harbor.toml
+            CHANGED=1
+            echo "wrote conf.d/20-harbor.toml"
+          fi
+
+          echo "--- nsswitch hosts line ---"
+          grep '^hosts' /etc/nsswitch.conf || true
+
+          # (2) DNS：见文件头踩坑说明 —— 必须删软链换静态文件
+          if [ -L /etc/resolv.conf ] || ! grep -q '^nameserver 100.90.90.90$' /etc/resolv.conf; then
+            [ -f /etc/resolv.conf.uk8s-bak ] || cat /etc/resolv.conf > /etc/resolv.conf.uk8s-bak
+            rm -f /etc/resolv.conf
+            cat > /etc/resolv.conf <<'EOF'
+          nameserver 100.90.90.90
+          nameserver 100.90.90.100
+          nameserver 10.8.255.1
+          nameserver 10.8.255.2
+          search .
+          EOF
+            CHANGED=1
+            echo "replaced resolv.conf with a static file"
+          else
+            echo "resolv.conf already a static file pointing at UDNS"
+          fi
+
+          echo "--- after: resolv.conf ---"
+          ls -l /etc/resolv.conf
+          cat /etc/resolv.conf
+          echo "--- node DNS check ---"
+          getent hosts harbor.devops.local || echo "getent FAILED"
+
+          # 耐久性验证：resolved 重启后静态文件必须还在。留在软链上这步就会被打回原形。
+          systemctl restart systemd-resolved
+          sleep 3
+          echo "--- durability: resolv.conf after systemd-resolved restart ---"
+          ls -l /etc/resolv.conf
+          if grep -q '^nameserver 100.90.90.90$' /etc/resolv.conf; then
+            echo "DURABLE_OK"
+          else
+            echo "DURABLE_FAIL: systemd-resolved took resolv.conf back"
+            cat /etc/resolv.conf
+          fi
+
+          if [ "$CHANGED" = "1" ]; then
+            systemctl restart containerd
+            sleep 6
+          fi
+          echo "containerd: $(systemctl is-active containerd)"
+
+          echo "--- crictl pull ---"
+          if command -v crictl >/dev/null; then
+            if crictl pull harbor.devops.local/library/test:v0.0.3; then echo "PULL_OK(crictl)"; else echo "PULL_FAIL(crictl)"; fi
+          else
+            echo "crictl absent"
+          fi
+          echo "--- ctr images (harbor count) ---"
+          ctr -a /run/containerd/containerd.sock -n k8s.io images ls 2>/dev/null | grep -c "harbor.devops.local" || true
+          echo "===== done $(hostname) ====="
+          OUTER
+          touch /tmp/done
+          echo "fix finished, holding pod open for log collection"
+          exec sleep infinity
+        readinessProbe:
+          exec:
+            command: ["/bin/sh", "-c", "test -f /tmp/done"]
+          periodSeconds: 5
+        securityContext:
+          privileged: true

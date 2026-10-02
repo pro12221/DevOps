@@ -1,0 +1,48 @@
+# Jenkins CD 段所需的最小权限（命名空间 devops 内）。
+#
+# 背景：集群里原有的 ClusterRole `jenkins-admin`（见 sa.yml）只授了
+#   apiGroups: [""]，resources/verbs 全通 —— 也就是**只有 core/v1**。
+# `kubectl set image` / `rollout status` 打的是 apps 组（Deployments、ReplicaSets），
+# 落到它的授权范围之外，于是 CD 第一步就 Forbidden。
+#
+# 这里不扩那个 ClusterRole（它已经能跨 namespace 读 secrets，太宽了），
+# 而是补一个**命名空间级**的最小 Role，绑给同一个 SA jenkins-admin。
+# core 组的读权限（pods/pods/log/services/events）是给 rollout 排障用的。
+#
+# 验证：
+#   kubectl auth can-i patch deployments -n devops --as=system:serviceaccount:devops:jenkins-admin
+#   kubectl auth can-i update deployments -n devops --as=system:serviceaccount:devops:jenkins-admin
+# 都应为 yes。
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: cd-deployer
+  namespace: devops
+rules:
+  # set image / rollout restart / rollout undo
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  # rollout status 要读 ReplicaSet 才能判断新 RS 是否就绪
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+  # 排障用：看 pod 状态与日志、读事件
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "services", "events"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cd-deployer
+  namespace: devops
+subjects:
+  - kind: ServiceAccount
+    name: jenkins-admin
+    namespace: devops
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: cd-deployer

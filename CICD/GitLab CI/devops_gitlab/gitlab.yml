@@ -1,0 +1,111 @@
+# GitLab CE 单 Pod（Omnibus 官方镜像）—— POC 验证环境
+# 所有组件（nginx/puma/sidekiq/postgres/redis/gitaly）都在同一个容器里用 runit 拉起，
+# 行为与裸机 omnibus 安装一致，适合验证；生产化再换官方 Helm chart 拆分组件。
+---
+# root 初始密码。不设的话 GitLab 会随机生成到 /etc/gitlab/initial_root_password
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gitlab-root-password
+  namespace: devops
+type: Opaque
+stringData:
+  # 密码强度校验会拒绝含 "gitlab" 等常见词的密码
+  password: "Dev0ps#2026"
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: gitlab
+  namespace: devops
+spec:
+  serviceName: gitlab
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gitlab
+  template:
+    metadata:
+      labels:
+        app: gitlab
+    spec:
+      # 镜像以 root 启动 gitlab-ctl，再由 runit 把各服务降到各自 uid（git/gitlab-www/postgres/...）
+      # 因此不能设 fsGroup/chown 整棵树，首次启动由 omnibus 自己按正确属主建目录
+      terminationGracePeriodSeconds: 60 
+      hostAliases:
+        # 让 Pod 内解析自己的 external_url 时回环到本机，避免绕一圈 EIP（hairpin）
+        - ip: "127.0.0.1"
+          hostnames:
+            - gitlab.devops.local
+        # jenkins.devops.local 不再写死 IP：已由 CoreDNS rewrite 别名到
+        # jenkins-service.devops.svc.cluster.local，全集群生效且随 Service 重建自动跟随。
+        # 见笔记：kube-system/coredns Corefile 的 rewrite 规则。
+      containers:
+        - name: gitlab
+          # 上一大版本的最新补丁版，比刚发的 19.x 稳妥；要追新直接改成 19.4.1-ce.0
+          image: gitlab/gitlab-ce:18.11.12-ce.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 80
+            - name: ssh
+              containerPort: 22
+          env:
+            # 该变量只在首次 reconfigure 时生效
+            - name: GITLAB_OMNIBUS_CONFIG
+              value: |
+                external_url 'http://gitlab.devops.local'
+                nginx['listen_port'] = 80
+                letsencrypt['enable'] = false
+                # POC 降配：默认 puma 4 worker + 关闭监控，省下 2~3G 内存
+                puma['worker_processes'] = 2
+                sidekiq['max_concurrency'] = 10
+                postgresql['shared_buffers'] = "512MB"
+                postgresql['max_worker_processes'] = 8
+                # kubelet 探针从节点 IP(10.x)访问，不在默认健康端点白名单(127.0.0.0/8)内会 404，
+                # liveness 会误杀，必须放开
+                gitlab_rails['monitoring_whitelist'] = ['127.0.0.0/8', '10.0.0.0/8']
+                prometheus_monitoring['enable'] = false
+                registry['enable'] = false
+                gitlab_kas['enable'] = false
+            - name: GITLAB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: gitlab-root-password
+                  key: password
+          # omnibus 首次 reconfigure 要 3~6 分钟，探针给足冷启动时间
+          readinessProbe:
+            httpGet:
+              path: /-/readiness
+              port: 80
+            initialDelaySeconds: 120
+            periodSeconds: 10
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /-/liveness
+              port: 80
+            initialDelaySeconds: 300
+            periodSeconds: 30
+            failureThreshold: 10
+          resources:
+            requests:
+              cpu: "2"
+              memory: 6Gi
+            limits:
+              cpu: "4"
+              memory: 10Gi
+          volumeMounts:
+            - name: data
+              mountPath: /etc/gitlab
+              subPath: etc-gitlab
+            - name: data
+              mountPath: /var/opt/gitlab
+              subPath: opt-gitlab
+            - name: data
+              mountPath: /var/log/gitlab
+              subPath: log-gitlab
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: gitlab-data

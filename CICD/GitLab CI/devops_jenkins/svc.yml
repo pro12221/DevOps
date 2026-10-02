@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: jenkins-service
+  namespace: devops
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/path: "/"
+    prometheus.io/port: "8080"
+spec:
+  selector:
+    app: jenkins-server
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+    # GitLab 发 webhook 用的是无端口的 http://jenkins.devops.local/...，
+    # 集群内经 CoreDNS rewrite 直连本 Service。不给 80 端口的话这里没有
+    # 转发规则，包被丢弃，表现为 Net::OpenTimeout "execution expired"。
+    - name: webhook
+      port: 80
+      targetPort: 8080
+    - name: agent
+      port: 50000
+      targetPort: 50000

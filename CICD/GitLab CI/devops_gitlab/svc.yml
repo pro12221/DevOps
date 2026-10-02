@@ -1,0 +1,18 @@
+# Web 走 istio-gateway 的 HTTPRoute，这里只做集群内 ClusterIP
+# SSH 未对外暴露：需要 git clone over SSH 时再改 NodePort/加 TCPRoute
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitlab
+  namespace: devops
+spec:
+  type: ClusterIP
+  selector:
+    app: gitlab
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+    - name: ssh
+      port: 22
+      targetPort: 22
