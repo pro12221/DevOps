@@ -1,0 +1,155 @@
+# devops_gitlab_runner —— 自建 GitLab Runner chart 的默认值
+#
+# 只有一处必须由你提供：runner.token（glrt- 开头）。
+# 其余默认值都对齐当前 POC 环境：ns=devops、GitLab=http://gitlab.devops.local、
+# Harbor 无 TLS（http）、rootless buildkitd 常驻在 tcp://buildkitd:1234。
+
+# ---- GitLab 服务端 ----
+gitlab:
+  # runner 回连 GitLab 的地址，写进 config.toml 的 url
+  url: http://gitlab.devops.local
+
+# ---- runner 镜像 ----
+image:
+  repository: gitlab/gitlab-runner
+  # 与 GitLab 18.11.x 同小版本线，避免 runner/GitLab 协议不匹配
+  tag: v18.11.4
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+nameOverride: ""
+fullnameOverride: ""
+
+# runner 副本数。k8s executor 下 1 个就够：真正干活的是它按 job 拉起的 Pod。
+replicas: 1
+
+# ---- 认证 ----
+# GitLab 18 起传统 registration token 已移除，只能用在 UI/API 创建的
+# authentication token（glrt- 开头）。runner 不再需要 `register`，
+# 直接把 token 写进 config.toml 就能跑。
+runner:
+  # 用 --set runner.token=glrt-xxx 或单独 values 文件传，别提交进版本库。
+  token: ""
+  # 或者：引用一个已存在的 Secret（key 必须是 config.toml，放整份 config.toml），
+  # 此时 chart 不自己渲染 config.toml。适合 token 由外部系统注入的场景。
+  existingSecret: ""
+
+  name: k8s-runner
+  # 全局并发 job 数（同时对应 config.toml 顶层 concurrent 与 [[runners]] limit）
+  concurrent: 4
+  checkInterval: 3
+  logLevel: info
+  # 每个 runner 向 GitLab 拉 job 的并发请求数。
+  # 实测设为 1 时 runner 会打 WARNING（长轮询下 job 会被拖到超时），官方建议 2-4。
+  requestConcurrency: 2
+  # job 必须带这些 tag 才会被本 runner 接走，逗号分隔。
+  # 与 test/.gitlab-ci.yml 里 tags: [go-pipline] 对齐。
+  tags: "go-pipline"
+  # 是否接不带 tag 的 job
+  runUntagged: false
+  # 锁定：锁定后只能跑创建它的项目（用 token 类型决定，这里只影响 config 字段）
+  locked: false
+  # 额外注入 job 容器的环境变量，如 ["GIT_SSL_NO_VERIFY=true"]
+  environment: []
+
+# ---- [[runners.kubernetes]]：runner 拉起的 job pod 长什么样 ----
+kubernetes:
+  # job pod 落在哪个 namespace，通常与 runner 相同
+  namespace: devops
+  # job 默认镜像；.gitlab-ci.yml 里的 image: 可覆盖它
+  image: alpine:3.21
+  # 覆盖 helper 镜像（clone 代码、传产物用）；留空 = 用 runner 内置默认
+  helperImage: ""
+  pullPolicy: if-not-present
+  # 保持 false：无守护进程构建（buildctl / kaniko）不需要特权。
+  # 只有要在 job 里直接 `docker build`（DinD）时才需要 true。
+  privileged: false
+  # job pod 用的 ServiceAccount；留空 = namespace 的 default。
+  # 想让 CI 里直接 `kubectl` 做 CD，填一个带权限的 SA（如 jenkins-admin）。
+  serviceAccount: ""
+
+  cpuRequest: 100m
+  memoryRequest: 128Mi
+  cpuLimit: ""
+  memoryLimit: ""
+
+  # 挂进每个 job pod 的 Secret 卷（config.toml 的 [[runners.kubernetes.volumes.secret]]）
+  # Harbor 无 TLS、走 http；buildctl 的 push 凭据取自客户端的 ~/.docker/config.json，
+  # rootless buildkit 镜像 HOME=/home/user，所以挂到 /home/user/.docker。
+  # 注意：volumes.secret 在 runner 侧没有 optional 语义，secret 不存在会导致 job pod 建不起来。
+  secretVolumes:
+    - name: harbor-push-config
+      mountPath: /home/user/.docker
+      readOnly: true
+  configMapVolumes: []
+
+  # 拉私有基础镜像用的 imagePullSecrets（config.toml 的 image_pull_secrets）
+  imagePullSecrets: []
+
+  # job pod 的安全上下文，默认不强制（rootless 镜像自己已经是 uid 1000）。
+  # 需要统一约束时再打开，例如：
+  #   {runAsUser: 1000, runAsNonRoot: true, fsGroup: 1000, seccompProfile: {type: RuntimeDefault}}
+  # （seccompProfile 会渲染成 [runners.kubernetes.pod_security_context.seccomp_profile]，
+  #  这是过 Pod Security Admission restricted 必需的）
+  podSecurityContext: {}
+
+  nodeSelector: {}
+
+# ---- runner 这个 Deployment 自身 ----
+# 999 是镜像里 gitlab-runner 用户的 uid/gid（docker inspect 出来的实际值），
+# 用它才能对上 /home/gitlab-runner 的属主。
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 999
+  runAsGroup: 999
+  fsGroup: 999
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+terminationGracePeriodSeconds: 30
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# ---- RBAC：runner 靠这份 SA 在 namespace 内创建/删除 job pod ----
+serviceAccount:
+  create: true
+  # 留空则用 chart 渲染出的全名
+  name: ""
+  annotations: {}
+
+rbac:
+  create: true
+
+# ---- session server：CI job 的交互式 web terminal（非必需）----
+sessionServer:
+  enabled: false
+  port: 8093
+  # 浏览器/终端客户端实际连接的地址（host:port），写进 config.toml 的
+  # advertise_address。不设时 runner 上报 listen_address（0.0.0.0），
+  # 外部根本连不上 → 要用 web terminal 就必须填，如 "NODE_IP:30093"。
+  advertiseAddress: ""
+  # Service 类型。ClusterIP 只集群内可达；要让浏览器连上 web terminal
+  # 用 NodePort（配 advertiseAddress）或 LoadBalancer。
+  serviceType: ClusterIP
+  # NodePort 固定端口；留空 = 集群自动分配（advertiseAddress 记得写实际分到的端口）
+  nodePort: ""
+  timeout: 1800
+
+# 是否再加一个 NetworkPolicy 收敛 runner 的出向流量，默认关（先跑通再说）
+networkPolicy:
+  enabled: false

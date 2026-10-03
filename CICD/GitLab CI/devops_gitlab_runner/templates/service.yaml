@@ -1,0 +1,22 @@
+{{- if .Values.sessionServer.enabled -}}
+# 只有开了 session server（CI job 的交互式 web terminal）才需要暴露端口。
+# 常规跑 job 不需要 Service。
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gitlab-runner.fullname" . }}-session
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitlab-runner.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.sessionServer.serviceType }}
+  selector:
+    {{- include "gitlab-runner.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: session
+      port: {{ .Values.sessionServer.port }}
+      targetPort: session
+      {{- if and (eq .Values.sessionServer.serviceType "NodePort") .Values.sessionServer.nodePort }}
+      nodePort: {{ .Values.sessionServer.nodePort }}
+      {{- end }}
+{{- end }}

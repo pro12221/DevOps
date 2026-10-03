@@ -1,0 +1,10 @@
+# 打包 helm package 时排除，避免把本地杂物打进 tgz
+.DS_Store
+.git/
+.gitignore
+*.tmproj
+*.swp
+*.bak
+*.tgz
+values-*.local.yaml
+values.local.yaml

@@ -1,0 +1,8 @@
+apiVersion: v2
+name: gitlab-runner
+description: 自建 GitLab Runner（kubernetes executor），不用官方 chart，最小可用
+type: application
+# chart 自己的版本，与 runner/GitLab 版本解耦
+version: 0.1.0
+# 默认跟随的 runner 镜像版本（与集群里 GitLab 18.11.x 同小版本线）
+appVersion: "18.11.4"

@@ -1,0 +1,48 @@
+{{- if .Values.rbac.create -}}
+# kubernetes executor 的原理：runner 用 k8s API 在 namespace 里
+# 动态创建 job pod、exec 进去、读日志、回收。所以必须给它一个 SA + Role。
+# 只需要 namespace 级 Role，不用 ClusterRole。
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "gitlab-runner.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitlab-runner.labels" . | nindent 4 }}
+rules:
+  # 创建/删除/查询 job pod，以及 exec/attach/log 进去
+  - apiGroups: [""]
+    resources: ["pods", "pods/exec", "pods/attach", "pods/log", "pods/status"]
+    verbs: ["get", "list", "watch", "create", "delete", "patch"]
+  # 读 secret：把 job 需要的 secret 卷挂进 job pod
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+  # configmap 缓存（cache:key 用 configmap 后端时需要写）
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "delete"]
+  # job 里 services: 会创建 Service 对象
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "gitlab-runner.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitlab-runner.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "gitlab-runner.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "gitlab-runner.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

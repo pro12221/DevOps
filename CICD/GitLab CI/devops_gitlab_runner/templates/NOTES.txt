@@ -1,0 +1,31 @@
+GitLab Runner 已安装：release={{ .Release.Name }} namespace={{ .Release.Namespace }}
+  name = {{ .Values.runner.name }}
+  tags = {{ .Values.runner.tags }}
+  job pod 落点 = namespace {{ .Values.kubernetes.namespace }}
+{{- if and (not .Values.runner.token) (not .Values.runner.existingSecret) }}
+
+！！ runner.token 为空：runner 进程能起来，但连不上 GitLab。
+   先去 GitLab 拿 glrt- token（Admin → CI/CD → Runners → New instance runner，
+   或项目/群组页的 CI/CD → Runners），再：
+
+     helm upgrade {{ .Release.Name }} <本 chart 路径> -n {{ .Release.Namespace }} \
+       --set runner.token=glrt-xxxxxxxx
+{{- end }}
+{{- if and .Values.sessionServer.enabled (not .Values.sessionServer.advertiseAddress) }}
+
+！！ sessionServer.enabled=true 但没设 advertiseAddress：runner 会把
+   0.0.0.0:{{ .Values.sessionServer.port }} 上报给 GitLab，浏览器的 web terminal 连不上。
+   用集群外可达的地址与端口暴露后重装，NodePort 例如：
+     helm upgrade {{ .Release.Name }} <本 chart 路径> -n {{ .Release.Namespace }} \
+       --set sessionServer.serviceType=NodePort \
+       --set sessionServer.nodePort=30093 \
+       --set sessionServer.advertiseAddress=NODE_IP:30093
+{{- end }}
+
+看 runner 是否上线：
+
+  kubectl -n {{ .Release.Namespace }} logs deploy/{{ include "gitlab-runner.fullname" . }} -f
+
+日志里出现 "Configuration loaded" 且没有 token/401 报错即正常。
+然后跑一个带 tags: [{{ .Values.runner.tags }}] 的 pipeline，
+在 GitLab 项目 Settings → CI/CD → Runners 能看到 job 被 {{ .Values.runner.name }} 接走。

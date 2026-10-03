@@ -1,0 +1,89 @@
+apiVersion: apps/v1                                                          # 声明使用的 API 版本：apps 组的 v1，Deployment 属于该组
+kind: Deployment                                                             # 资源类型：Deployment，无状态工作负载的副本控制器
+metadata:                                                                    # 元数据区块：描述这个 Deployment 的身份信息
+  name: {{ include "gitlab-runner.fullname" . }}                             # 资源名：调用 _helpers.tpl 里的 fullname 模板，拼接 release 名生成唯一名称
+  namespace: {{ .Release.Namespace }}                                        # 命名空间：取自 helm install -n 指定的命名空间，避免硬编码
+  labels:                                                                    # 标签：打在 Deployment 对象本身上，供查询/选择使用
+    {{- include "gitlab-runner.labels" . | nindent 4 }}                      # 引入公共标签模板；nindent 4 = 先换行再缩进 4 格，保证缩进正确
+spec:                                                                        # 期望状态：下面描述这个 Deployment 想要的最终形态
+  replicas: {{ .Values.replicas }}                                           # 副本数：读取 values.yaml 中的 replicas
+  selector:                                                                  # 选择器：用标签决定这个 Deployment 管理哪些 Pod
+    matchLabels:                                                             # 匹配条件：要求 Pod 必须带有下面这组标签
+      {{- include "gitlab-runner.selectorLabels" . | nindent 6 }}            # 复用 selectorLabels 模板，必须与下面 Pod 标签完全一致
+  template:                                                                  # Pod 模板：每创建一个副本都按这里的定义渲染
+    metadata:                                                                # Pod 的元数据
+      labels:                                                                # Pod 标签：必须包含上面 selector.matchLabels 的标签，否则部署会失败
+        {{- include "gitlab-runner.selectorLabels" . | nindent 8 }}          # 同上，缩进 8 格以匹配当前层级
+      {{- with .Values.podAnnotations }}                                     # 若 values 里配置了 podAnnotations，则进入该上下文
+      annotations:                                                           # Pod 注解：对接监控/日志等系统的附加信息
+        {{- toYaml . | nindent 8 }}                                          # 把当前上下文（注解 map）转成 YAML，缩进 8 格
+      {{- end }}                                                             # 结束 with 块
+    spec:                                                                    # Pod 规格：描述容器、卷、安全等运行细节
+      serviceAccountName: {{ include "gitlab-runner.serviceAccountName" . }}  # 指定 Pod 使用的 ServiceAccount，用于 RBAC 鉴权
+      {{- with .Values.imagePullSecrets }}                                   # 若配置了拉取镜像用的 Secret，则进入该上下文
+      imagePullSecrets:                                                      # 拉取私有镜像仓库时使用的凭据列表
+        {{- toYaml . | nindent 8 }}                                          # 渲染镜像拉取 Secret，缩进 8 格
+      {{- end }}                                                             # 结束 with 块
+      securityContext:                                                       # Pod 级安全上下文
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}                 # 渲染 values 中的 podSecurityContext（如 runAsUser、fsGroup）
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}  # 优雅终止宽限期：收到 SIGTERM 后最多等这么多秒再强杀
+      # 为什么要有 initContainer：config.toml 从 Secret 挂进来是只读的，
+      # 而 runner 运行时要往配置目录里写 .runner_system_id 等文件。
+      # 先把 Secret 里的 config.toml 拷进一块可写的 emptyDir，runner 再用它。
+      initContainers:                                                        # 初始化容器：在主容器启动前运行，用于准备环境
+        - name: copy-config                                                  # 该 initContainer 的名字
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"    # 镜像：仓库地址 + 标签
+          imagePullPolicy: {{ .Values.image.pullPolicy }}                    # 拉取策略：Always / IfNotPresent / Never
+          command: ["sh", "-c", "cp /config-src/config.toml /config/config.toml && chmod 0600 /config/config.toml"]  # 把只读 Secret 里的配置拷到可写目录，并把权限收紧为 0600
+          securityContext:                                                   # 容器级安全上下文
+            {{- toYaml .Values.securityContext | nindent 12 }}               # 渲染容器安全上下文，缩进 12 格匹配层级
+          volumeMounts:                                                      # 挂载点：把卷映射到容器内的路径
+            - name: config-src                                               # 引用下面定义的 config-src 卷（只读 Secret）
+              mountPath: /config-src                                         # 挂到 /config-src，作为只读来源
+              readOnly: true                                                 # 只读挂载，防止误改源配置
+            - name: config                                                   # 引用 config 卷（可写的 emptyDir）
+              mountPath: /config                                             # 挂到 /config，作为拷贝目标
+      containers:                                                            # 主容器列表
+        - name: runner                                                       # 容器名
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"    # 镜像：与 initContainer 相同
+          imagePullPolicy: {{ .Values.image.pullPolicy }}                    # 拉取策略
+          args:                                                              # 容器启动参数（覆盖镜像默认的 CMD）
+            - run                                                            # gitlab-runner 子命令：以 runner 模式运行
+            - --config                                                       # 指定配置文件路径的开关
+            - /etc/gitlab-runner/config.toml                                 # 配置文件路径（即挂载进来的那份）
+            - --working-directory                                            # 指定工作目录的开关
+            - /home/gitlab-runner                                            # 工作目录路径
+          securityContext:                                                   # 容器级安全上下文
+            {{- toYaml .Values.securityContext | nindent 12 }}               # 渲染容器安全上下文，缩进 12 格
+          resources:                                                         # 资源请求与限制
+            {{- toYaml .Values.resources | nindent 12 }}                     # 渲染 values 中的 resources（requests/limits），缩进 12 格
+          {{- if .Values.sessionServer.enabled }}                            # 若在 values 中启用了 session server，则渲染下面的 ports
+          ports:                                                             # 容器暴露的端口
+            - name: session                                                  # 端口名，供 Service 按名字引用
+              containerPort: {{ .Values.sessionServer.port }}                # 容器端口号，取自 values
+          {{- end }}                                                         # 结束 if 块
+          volumeMounts:                                                      # 主容器的挂载点
+            - name: config                                                   # 引用 config 卷（可写 emptyDir）
+              mountPath: /etc/gitlab-runner                                  # 把可写配置目录挂到 runner 读取配置的位置
+            - name: home                                                     # 引用 home 卷（可写 emptyDir）
+              mountPath: /home/gitlab-runner                                 # 工作目录，必须可写
+      volumes:                                                               # Pod 卷定义：容器里挂载的卷都在这里声明
+        - name: config-src                                                   # 卷名：与 initContainer 挂载的 config-src 对应
+          secret:                                                            # 卷类型为 Secret
+            secretName: {{ include "gitlab-runner.configSecretName" . }}     # Secret 名称：由模板生成，内含 config.toml
+        - name: config                                                       # 卷名：可写的配置目录
+          emptyDir: {}                                                       # emptyDir：Pod 生命周期内的临时目录，随 Pod 删除而清空
+        - name: home                                                         # 卷名：可写的工作目录
+          emptyDir: {}                                                       # 空目录卷，保证 /home/gitlab-runner 可写
+      {{- with .Values.nodeSelector }}                                       # 若配置了 nodeSelector，则进入该上下文
+      nodeSelector:                                                          # 节点选择器：把 Pod 调度到带指定标签的节点
+        {{- toYaml . | nindent 8 }}                                          # 渲染 nodeSelector map，缩进 8 格
+      {{- end }}                                                             # 结束 with 块
+      {{- with .Values.affinity }}                                           # 若配置了亲和性，则进入该上下文
+      affinity:                                                              # 亲和/反亲和规则：控制 Pod 调度的倾向或强制约束
+        {{- toYaml . | nindent 8 }}                                          # 渲染 affinity 配置，缩进 8 格
+      {{- end }}                                                             # 结束 with 块
+      {{- with .Values.tolerations }}                                        # 若配置了容忍，则进入该上下文
+      tolerations:                                                           # 容忍度：允许 Pod 调度到带污点（taint）的节点
+        {{- toYaml . | nindent 8 }}                                          # 渲染 tolerations 列表，缩进 8 格
+      {{- end }}                                                             # 结束 with 块
