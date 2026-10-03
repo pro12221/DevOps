@@ -30,7 +30,8 @@ replicas: 1
 # 直接把 token 写进 config.toml 就能跑。
 runner:
   # 用 --set runner.token=glrt-xxx 或单独 values 文件传，别提交进版本库。
-  token: ""
+  # （本仓库为一次性实验环境，此处直接内置 token，用完即删。）
+  token: "glrt-fXfmNyz8yIe1ZoIGxKn6YG86MQpwOjEKdDozCnU6MQ8.01.1707qq4lx"
   # 或者：引用一个已存在的 Secret（key 必须是 config.toml，放整份 config.toml），
   # 此时 chart 不自己渲染 config.toml。适合 token 由外部系统注入的场景。
   existingSecret: ""
