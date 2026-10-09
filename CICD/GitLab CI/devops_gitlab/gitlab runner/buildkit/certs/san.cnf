@@ -1,0 +1,8 @@
+[req]
+distinguished_name = dn
+req_extensions     = ext
+prompt             = no
+[dn]
+CN = buildkitd
+[ext]
+subjectAltName = DNS:buildkitd,DNS:buildkitd.default.svc,DNS:buildkitd.default.svc.cluster.local,DNS:buildkitd.devops.svc,DNS:buildkitd.devops.svc.cluster.local,DNS:localhost,IP:127.0.0.1
