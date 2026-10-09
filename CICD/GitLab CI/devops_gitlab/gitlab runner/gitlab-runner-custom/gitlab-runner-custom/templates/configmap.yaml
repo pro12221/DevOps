@@ -1,0 +1,18 @@
+{{- /*
+  渲染期守卫：values.yaml 里 runners.config 留的是占位符 token，真实 token 安装时注入。
+  少了这段，"忘了带 token 就 helm install" 会静默装出一个 token 是 __RUNNER_TOKEN__ 的
+  ConfigMap —— Pod 照样 Running，只是 runner 一直认证失败、UI 上永远 never_contacted，
+  排查起来要去看日志才知道。这里直接让渲染失败，把问题挡在 install 之前。
+*/ -}}
+{{- $cfg := required "runners.config 为空：请用 --set-file 'runners.config'=./config.toml 注入 config.toml" .Values.runners.config -}}
+{{- if contains "__RUNNER_TOKEN__" $cfg -}}
+{{- fail "config.toml 里还是占位符 __RUNNER_TOKEN__，装上去 runner 会一直认证失败。安装时注入真实 token：helm upgrade --install runner ./gitlab-runner-custom -n devops --set-file 'runners.config'=./config.toml" -}}
+{{- end -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "gitlab-runner.fullname" . }}-config
+  namespace: {{ .Release.Namespace }}
+data:
+  config.toml: |
+    {{- $cfg | nindent 4 }}

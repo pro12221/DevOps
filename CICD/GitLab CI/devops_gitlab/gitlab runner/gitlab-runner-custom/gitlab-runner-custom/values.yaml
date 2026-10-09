@@ -1,0 +1,98 @@
+# gitlab-runner-custom —— 自写 chart 的默认值（POC / lab 环境）
+#
+# 安装：
+#   helm upgrade --install runner ./gitlab-runner-custom -n devops \
+#     --set-file 'runners.config'=./config.toml
+# config.toml 是本机那个含真实 glrt- token 的文件，不入库。
+
+# ---- 命名 ----
+# fullnameOverride 固定住名字前缀：release 名一改，SA/Role/RoleBinding/ConfigMap 全跟着变，
+# 挂 pid 的 Manifest 和 RBAC 授权对象都会对不上
+nameOverride: ""
+fullnameOverride: gitlab-runner
+
+# ---- 镜像 ----
+image:
+  repository: gitlab/gitlab-runner
+  # 和 GitLab server 对齐（这套 server 是 18.11，Docker Hub 上对应最新是 18.11.4）。
+  # runner 比 server 落后太多官方就不支持了，别再钉 17.x
+  tag: alpine-v18.11.4
+  # 本地没有才去拉；lab 网络慢，别每次重建都重拉一遍
+  pullPolicy: IfNotPresent
+
+# ---- 部署形态 ----
+# 一个 runner 进程就能并发跑多个 job（并发数在 config.toml 的 concurrent 里），
+# 多副本反而会让同一个 runner 重复领活，除非要做池化隔离否则不需要
+replicas: 1
+
+# runner 本体只维持长轮询，很轻；吃资源的是它拉起来的 build pod
+# （那个的上限在 config.toml 的 [runners.kubernetes.pod_resources] 里）
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+# ---- RBAC ----
+rbac:
+  # runner 要在自己命名空间里创建/删除 build pod（还要读 secret 给私有仓库的凭据），
+  # 所以需要 namespaced 的 Role + RoleBinding；复用集群里现成的高权限 SA 时可以关掉
+  create: true
+
+# ---- 上线用 ServiceAccount ----
+# 与上面的 rbac 不是一回事：rbac 授的是 runner 自己的 SA（管理 build pod 用），
+# 这里建的是「流水线里 kubectl 上线」用的 SA —— job pod 跑在它自己的 SA 下，
+# 默认是命名空间的 default，没有任何权限，所以上线要在它身上单独授权。
+deployRBAC:
+  create: true
+  serviceAccountName: ci-deploy
+
+# ---- ServiceAccount ----
+serviceAccount:
+  # false 时不渲染 SA，直接挂下面 name 指的既有 SA（不设就回退到 default）
+  create: true
+  name: gitlab-runner
+  # 用空 map 而不是注释掉整块：模板里是 `with .Values.serviceAccount.annotations`
+  annotations: {}
+
+# ---- runner 配置 ----
+runners:
+  # 整段 config.toml，由 templates/configmap.yaml 用 nindent 4 塞进
+  # ConfigMap <fullname>-config 的 config.toml 键。
+  #
+  # 注意：这里进的是 ConfigMap 不是 Secret —— 同命名空间能读 ConfigMap 的人都能看到 token。
+  # 所以仓库里只留占位符，真实 token 安装时注入（见文件头的安装命令）。
+  #
+  # 这块是整段文本：url / namespace / concurrent 都焊在里面，--set 没法单独覆盖某一行，
+  # 只能整块换一份。等真要按 key 调参，再改成结构化 values + toYaml 渲染。
+  config: |
+    # 同时跑几个 job；节点 8C16G，POC 压到 2
+    concurrent = 2
+    # 轮询 GitLab 拿 job 的间隔（秒）
+    check_interval = 3
+    log_level = "info"
+
+    [[runners]]
+      name = "hk-devops-k8s"
+      url = "http://gitlab.devops.local"
+      token = "glrt-6vtRKI4XNgn1DSQ01aFtQm86MQpwOjEKdDozCnU6MQ8.01.171xtt4z5"
+      executor = "kubernetes"
+
+      [runners.kubernetes]
+        namespace = "devops"
+        image = "alpine:3.20"
+        privileged = false
+        pull_policy = ["if-not-present"]
+        # 允许 job 用变量 KUBERNETES_SERVICE_ACCOUNT_OVERWRITE 覆盖自己的 SA（值必须
+        # 匹配这个正则；不设这一行，覆盖变量会被直接忽略）。上线类 job 借此切到 ci-deploy，
+        # 构建类 job 不设变量、继续用 default SA（无任何权限）。
+        service_account_overwrite_allowed = "^ci-deploy$"
+        # build 容器不响应 SIGTERM，k8s 默认要白等满 30s 宽限期才强杀；压到 1s 让跑完的 pod 秒级消失。
+        # 注意别去设已废弃的 terminationGracePeriodSeconds —— 一设它，这个新键会被直接忽略。
+        # 这行必须放在 [runners.kubernetes.pod_resources] 之前，否则 TOML 会把它算进 pod_resources 表。
+        pod_termination_grace_period_seconds = 1
+        [runners.kubernetes.pod_resources]
+          requests = { cpu = "250m", memory = "256Mi" }
+          limits   = { cpu = "1500m", memory = "2Gi" }

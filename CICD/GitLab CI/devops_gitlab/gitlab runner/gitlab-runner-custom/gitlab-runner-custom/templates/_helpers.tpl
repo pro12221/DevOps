@@ -1,4 +1,4 @@
-{{/* ---------- 名字 ---------- */}}
+{{/* ---------- 名称 ---------- */}}
 
 {{- define "gitlab-runner.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}
@@ -26,7 +26,7 @@ app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 
-{{/* 只放「不会随发布变化」的标签，selector 用，绝不能塞 version */}}
+{{/* 只放「不随版本变化」的标签，selector 用，绝不能塞 version */}}
 {{- define "gitlab-runner.selectorLabels" -}}
 app.kubernetes.io/name: {{ include "gitlab-runner.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
@@ -39,13 +39,5 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- default (include "gitlab-runner.fullname" .) .Values.serviceAccount.name -}}
 {{- else -}}
 {{- default "default" .Values.serviceAccount.name -}}
-{{- end -}}
-{{- end -}}
-
-{{- define "gitlab-runner.configSecretName" -}}
-{{- if .Values.runner.existingSecret -}}
-{{- .Values.runner.existingSecret -}}
-{{- else -}}
-{{- printf "%s-config" (include "gitlab-runner.fullname" .) -}}
 {{- end -}}
 {{- end -}}

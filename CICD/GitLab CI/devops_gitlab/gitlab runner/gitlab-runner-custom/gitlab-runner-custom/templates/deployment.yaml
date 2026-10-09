@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gitlab-runner.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitlab-runner.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas }}
+  selector:
+    # selector 创建后不可变 —— 装完之后再动这里的标签会直接报错，要改得删了重建。
+    # 用的和 pod template 同一套 helper，省得两处写岔
+    matchLabels:
+      {{- include "gitlab-runner.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "gitlab-runner.selectorLabels" . | nindent 8 }}
+      annotations:
+        # 把 ConfigMap 渲染结果揉成 checksum：下面 config 是 subPath 挂的单文件，
+        # k8s 不会把 ConfigMap 的更新同步进已经跑着的 Pod，所以靠这个注解变化触发滚动重启。
+        # rotate token / 改并发数之后能不生效，全看这一行
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "gitlab-runner.serviceAccountName" . }}
+      containers:
+        - name: gitlab-runner
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # 只跑 run，不做 register：config.toml 由 ConfigMap 提供（里面已经带着 glrt- token），
+          # register 是往 config.toml 里写的，挂载是只读的，写了必然报 read-only file system。
+          # 镜像默认 CMD 就是 run --user=gitlab-runner --working-directory=/home/gitlab-runner，
+          # 用 args 覆盖就得把这几个都补齐，否则丢掉 --user 会变成 root 跑
+          args:
+            - run
+            - --config=/etc/gitlab-runner/config.toml
+            - --user=gitlab-runner
+            - --working-directory=/home/gitlab-runner
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            # 挂单个文件而不是挂整个 /etc/gitlab-runner 目录：整目录挂载会把镜像里该目录的
+            # 其他内容一起盖掉，将来加证书或 credentials 就没地方放
+            - name: config
+              mountPath: /etc/gitlab-runner/config.toml
+              subPath: config.toml
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "gitlab-runner.fullname" . }}-config

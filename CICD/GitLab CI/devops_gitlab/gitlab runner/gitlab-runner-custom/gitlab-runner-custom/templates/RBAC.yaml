@@ -1,0 +1,28 @@
+{{- if .Values.rbac.create }} # 如果values 中的rbac.create为true就创建
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "gitlab-runner.fullname" . }}
+  namespace: {{ .Release.Namespace }} # Helm 安装或升级时使用的命名空间，通常通过 -n 或 --namespace
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/exec", "pods/log", "pods/attach"]
+    verbs: ["get", "list", "watch", "create", "delete", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "delete", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "gitlab-runner.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "gitlab-runner.fullname" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "gitlab-runner.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

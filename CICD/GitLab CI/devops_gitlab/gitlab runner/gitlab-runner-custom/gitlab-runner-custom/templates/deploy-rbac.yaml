@@ -1,0 +1,61 @@
+{{- /*
+  上线用的 ServiceAccount。
+
+  为什么不能靠上面那份 RBAC.yaml：那份授的是 runner 自己的 SA（gitlab-runner），
+  它是「runner 管理进程」用来创建/删除 build pod、写 job 凭据 secret 的。
+  而 job pod 用的是另一套身份 —— [runners.kubernetes] service_account 指定的那个，
+  没指定时就是命名空间的 default（在里面没有任何权限）。所以 kubectl 上线的 job
+  即使 runner 自己是 admin 也照样 403：它是以 default SA 的身份在调 API。
+
+  这里的做法：单独建一个只够上线的 SA（ci-deploy），Role 只给 deployments/
+  replicasets/pods 的读写，再用 KUBERNETES_SERVICE_ACCOUNT_OVERWRITE 在
+  deploy 类 job 上按需切换（见 config.toml 的 service_account_overwrite_allowed）。
+  构建类 job 维持 default SA，拿不到任何上线权限。
+*/ -}}
+{{- if .Values.deployRBAC.create }}
+{{- $sa := .Values.deployRBAC.serviceAccountName }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $sa }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitlab-runner.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $sa }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitlab-runner.labels" . | nindent 4 }}
+rules:
+  # kubectl set image 要 patch deployment；rollout status 要读 deployment 状态
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  # rollout status 读 ReplicaSet 判断新 RS 是否就绪
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+  # 流水线末尾 kubectl get pods -l app=... 用
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $sa }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitlab-runner.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $sa }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $sa }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
