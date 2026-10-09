@@ -1,0 +1,34 @@
+# 共用公网入口 —— Gateway API（Kubernetes Gateway API）+ Istio
+# 与 gitlab / harbor / jenkins 各自 route.yml 里的 HTTPRoute 配套：
+# 那些路由都 parentRef 到这里的 Gateway，靠 hostname 区分后端。
+#
+# 工作方式（Istio 1.22+ 的"autopilot"模式）：
+#   1) istiod 监听到本 Gateway 后，自动在 istio-system 置备 Deployment + Service，
+#      名字固定为 <Gateway名>-<gatewayClassName>，即 istio-gateway-istio；
+#   2) Service 是 LoadBalancer，UK8S 的 CCM 会自动在外面创建 ULB + 公网 EIP
+#      （EIP 名形如 istio-gateway-istio.istio-system.svc.<集群ID>）；
+#   3) 本机访问要用 /etc/hosts 把 *.devops.local 指到该 EIP。
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: istio-gateway
+  namespace: istio-system
+spec:
+  gatewayClassName: istio
+  listeners:
+    # 80/443 两个端口各开一个 listener，对应 ULB 上会看到两个 VServer 监听
+    - name: http
+      port: 80
+      protocol: HTTP
+      # 跨命名空间放行：HTTPRoute 在 devops 命名空间，Gateway 在 istio-system
+      allowedRoutes:
+        namespaces:
+          from: All
+    - name: https
+      port: 443
+      # POC 全明文：证书在入口层之后再加。要上 TLS 时把 protocol 改成 HTTPS，
+      # 并补 tls.certificateRefs 指向 istio-system 里的证书 Secret。
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: All
