@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: buildkitd-config
+  namespace: devops
+data:
+  buildkitd.toml: |
+    debug = false
+    # Harbor is reachable in-cluster over plain HTTP (nginx entrypoint on :80).
+    # Declaring the registry insecure is what makes buildkit talk HTTP instead
+    # of defaulting to HTTPS for a dotted hostname.
+    [registry."harbor.devops.local"]
+      http = true

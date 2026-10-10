@@ -89,3 +89,13 @@ internalTLS:
 
 # Harbor 管理员初始密码；仅首次安装写入，之后改密码要在 portal 里改
 harborAdminPassword: "Harbor12345"
+
+# 机器人账号
+# 名称robot$devops+buildkit
+# hbm2KOzl0DfKCGp0yDjB42IvwyE2SjjD
+
+printf 'robot$devops+ci:hbm2KOzl0DfKCGp0yDjB42IvwyE2SjjD' | base64 
+cm9ib3QkZGV2b3BzK2NpOmhibTJLT3psMERmS0NHcDB5RGpCNDJJdnd5RTJTampE
+cat > config.json <<EOF                                                                                                                       
+{"auths":{"harbor":{"auth":"cm9ib3QkZGV2b3BzK2NpOmhibTJLT3psMERmS0NHcDB5RGpCNDJJdnd5RTJTampE"}}}                                                                                                         
+EOF 

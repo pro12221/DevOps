@@ -30,6 +30,8 @@ spec:
             - --tlskey
             - /certs/key.pem
             - --oci-worker-no-process-sandbox
+            - --config
+            - /etc/buildkit/buildkitd.toml
           # the probe below will only work after Release v0.6.3
           readinessProbe:
             exec:
@@ -64,12 +66,14 @@ spec:
             - name: certs
               readOnly: true
               mountPath: /certs
-            # Dockerfile has `VOLUME /home/user/.local/share/buildkit` by default too,
-            # but the default VOLUME does not work with rootless on Google's Container-Optimized OS
-            # as it is mounted with `nosuid,nodev`.
-            # https://github.com/moby/buildkit/issues/879#issuecomment-1240347038
             - mountPath: /home/user/.local/share/buildkit
               name: buildkitd
+            - name: buildkitd-config
+              readOnly: true
+              mountPath: /etc/buildkit
+            - name: docker-config
+              readOnly: true
+              mountPath: /home/user/.docker
       volumes:
         # buildkit-daemon-certs must contain ca.pem, cert.pem, and key.pem
         - name: certs
@@ -77,6 +81,13 @@ spec:
             secretName: buildkit-daemon-certs
         - name: buildkitd
           emptyDir: {}
+        # declares harbor.devops.local as a plain-HTTP (insecure) registry
+        - name: buildkitd-config
+          configMap:
+            name: buildkitd-config
+        - name: docker-config
+          secret:
+            secretName: harbor-push-credentials
 ---
 apiVersion: v1
 kind: Service
