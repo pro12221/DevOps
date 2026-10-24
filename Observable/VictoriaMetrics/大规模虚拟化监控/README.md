@@ -149,7 +149,8 @@ Grafana 数据源指向 `VictoriaMetrics :8428`，五个仪表盘：
 - `uvmp-host-ping.json` — 宿主机 ICMP/TCP 拨测
 - `uvmp-vm-ping.json` — 虚机 ICMP/TCP 拨测
 - `uvmp-host-resource.json` — 宿主机资源
-- `uvmp-vm-resource.json` — 虚机资源（查 `uvmp:vm:*` 录制序列）
+- `uvmp-vm-resource.json` — 虚机资源（查 `uvmp:vm:*` 录制序列）；打开时默认
+  `idc=HB13` + 最近 1 分钟 + 不自动刷新（点右上角刷新按钮取最新一帧），宿主机/业务变量仍可改
 - `uvmp-victoriametrics-selfmon.json` — 组件自监控（查 `self-monitoring` job 自身指标：vmagent
   抓取/远程写入、VM 存储引擎/缓存、vmalert 规则求值、blackbox 探针分片健康；按 `scrape_source`
   变量切环境，活跃抓取 worker 面板直接盯踩坑 #5 的 EMFILE 风险）
